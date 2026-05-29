@@ -57,7 +57,7 @@ class SpeechService {
     // MARK: - Recording Controls
 
     /// Tap 1: Start a new recording session.
-    func startRecording() async throws {
+    func startRecording() throws {
         guard recordingState == .idle else { return }
 
         // Configure audio session for recording only
@@ -75,11 +75,9 @@ class SpeechService {
 
         guard let recognitionRequest else { return }
 
-        // Start the audio engine
+        // Install the tap BEFORE starting the engine so the first buffer is non-zero.
+        // Starting the engine first causes AVAudioBuffer to deliver empty frames.
         let inputNode = audioEngine.inputNode
-        try audioEngine.start()
-
-        // Attach the audio buffer to the request
         inputNode.installTap(
             onBus: 0,
             bufferSize: 1024,
@@ -87,6 +85,8 @@ class SpeechService {
         ) { buffer, _ in
             recognitionRequest.append(buffer)
         }
+
+        try audioEngine.start()
 
         liveTranscript = ""
         errorMessage = nil

@@ -257,7 +257,7 @@ private struct IdleInputRow: View {
             return
         }
         do {
-            try await viewModel.speechService.startRecording()
+            try viewModel.speechService.startRecording()
         } catch {
             viewModel.errorMessage = "Could not start recording: \(error.localizedDescription)"
         }

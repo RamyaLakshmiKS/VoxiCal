@@ -54,12 +54,16 @@ class ResponseCacheService {
     // MARK: - Search
 
     /// Returns up to 3 cached entries whose query overlaps the given search terms.
-    /// Uses simple word-intersection scoring — no embeddings needed for MVP.
+    /// Only considers entries from the last 30 minutes to avoid stale time-relative labels
+    /// (e.g. an entry cached yesterday saying "Tomorrow" for a meeting that is now Today).
     func search(query: String) async -> [CachedEntry] {
+        let cutoff = Calendar.current.date(byAdding: .minute, value: -30, to: Date())!
+        let recentCache = cache.filter { $0.timestamp > cutoff }
+
         let searchWords = words(from: query)
         guard !searchWords.isEmpty else { return [] }
 
-        let scored: [(entry: CachedEntry, score: Int)] = cache.compactMap { entry in
+        let scored: [(entry: CachedEntry, score: Int)] = recentCache.compactMap { entry in
             let entryWords = words(from: entry.query + " " + entry.response)
             let overlap = searchWords.filter { entryWords.contains($0) }.count
             return overlap > 0 ? (entry, overlap) : nil
