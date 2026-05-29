@@ -9,11 +9,7 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
     typealias Output = String
 
     nonisolated let name = "fetchCalendarEvents"
-    nonisolated let description = """
-        Fetches the user's upcoming calendar events from their iPhone calendar.
-        Call this when the user asks about their schedule, meetings, appointments, or events.
-        Always call searchPastResponses first — only call this if the cache has no fresh answer.
-        """
+    nonisolated let description = "Fetches upcoming calendar events. Call this when the user asks about their schedule, meetings, or appointments. Always call searchPastResponses first."
 
     @Generable
     struct Arguments {
@@ -58,11 +54,7 @@ struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
     typealias Output = String
 
     nonisolated let name = "deleteCalendarEvent"
-    nonisolated let description = """
-        Permanently deletes a specific calendar event by its ID.
-        Only call this AFTER you have named the event in your response and the user has confirmed deletion.
-        You must first call fetchCalendarEvents to obtain the correct eventID before calling this tool.
-        """
+    nonisolated let description = "Deletes a calendar event by ID. Only call AFTER naming the event in your response and the user confirms. Always call fetchCalendarEvents first to get the correct eventID."
 
     @Generable
     struct Arguments {
@@ -91,12 +83,7 @@ struct SearchCacheTool: Tool, @unchecked Sendable {
     typealias Output = String
 
     nonisolated let name = "searchPastResponses"
-    nonisolated let description = """
-        Searches previously cached VoxiCal responses for calendar information.
-        Always call this FIRST before fetchCalendarEvents.
-        If it returns a recent, relevant result, use that and skip fetchCalendarEvents.
-        Only call fetchCalendarEvents if the cache returns nothing useful.
-        """
+    nonisolated let description = "Searches cached responses for calendar information. Call this FIRST before fetchCalendarEvents. If a recent result is found, use it and skip fetching. Only fetch if cache returns nothing."
 
     @Generable
     struct Arguments {
