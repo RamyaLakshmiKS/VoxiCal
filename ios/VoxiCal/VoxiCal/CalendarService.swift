@@ -13,14 +13,25 @@ struct CalendarEvent: Codable, CustomStringConvertible, Sendable {
 
     var description: String {
         let formatter = DateFormatter()
-        formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        let start = formatter.string(from: startDate)
-        var text = "• \(title) — \(start)"
-        if let loc = location, !loc.isEmpty {
-            text += " (\(loc))"
+        let time = formatter.string(from: startDate)
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let eventDay = calendar.startOfDay(for: startDate)
+
+        let dayLabel: String
+        if eventDay == today {
+            dayLabel = "Today"
+        } else if eventDay == calendar.date(byAdding: .day, value: 1, to: today) {
+            dayLabel = "Tomorrow"
+        } else {
+            let formatter2 = DateFormatter()
+            formatter2.dateFormat = "EEE, MMM d"
+            dayLabel = formatter2.string(from: startDate)
         }
-        return text
+
+        return "• \(title) — \(dayLabel) \(time)"
     }
 }
 

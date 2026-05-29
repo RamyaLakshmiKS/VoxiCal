@@ -117,6 +117,12 @@ class CalendarViewModel {
     func sendMessage(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isProcessing else { return }
+
+        // Auto-reset conversation after 16 messages (8 turns) to prevent context window overflow
+        if messages.count >= 16 {
+            clearConversation()
+        }
+
         guard let session else {
             errorMessage = "Session not ready — please wait a moment and try again."
             return
