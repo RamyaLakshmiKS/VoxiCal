@@ -5,7 +5,7 @@ import Foundation
 
 /// Lets the LLM fetch upcoming calendar events for a given date range.
 /// The model calls this autonomously whenever the user asks about their schedule.
-struct FetchCalendarEventsTool: Tool {
+struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
     typealias Output = String
 
     let name = "fetchCalendarEvents"
@@ -54,7 +54,7 @@ struct FetchCalendarEventsTool: Tool {
 
 /// Lets the LLM delete a specific calendar event after the user has confirmed.
 /// The model must name the event in its response before calling this tool.
-struct DeleteCalendarEventTool: Tool {
+struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
     typealias Output = String
 
     let name = "deleteCalendarEvent"
@@ -87,7 +87,7 @@ struct DeleteCalendarEventTool: Tool {
 /// This is the primary context-window management mechanism — by recalling past responses
 /// from disk, the LLM avoids re-fetching the same calendar data repeatedly, keeping
 /// the live session transcript lean and within the 4,096-token limit.
-struct SearchCacheTool: Tool {
+struct SearchCacheTool: Tool, @unchecked Sendable {
     typealias Output = String
 
     let name = "searchPastResponses"
