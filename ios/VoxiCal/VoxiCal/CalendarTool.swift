@@ -8,8 +8,8 @@ import Foundation
 struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
     typealias Output = String
 
-    let name = "fetchCalendarEvents"
-    let description = """
+    nonisolated let name = "fetchCalendarEvents"
+    nonisolated let description = """
         Fetches the user's upcoming calendar events from their iPhone calendar.
         Call this when the user asks about their schedule, meetings, appointments, or events.
         Always call searchPastResponses first — only call this if the cache has no fresh answer.
@@ -57,8 +57,8 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
 struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
     typealias Output = String
 
-    let name = "deleteCalendarEvent"
-    let description = """
+    nonisolated let name = "deleteCalendarEvent"
+    nonisolated let description = """
         Permanently deletes a specific calendar event by its ID.
         Only call this AFTER you have named the event in your response and the user has confirmed deletion.
         You must first call fetchCalendarEvents to obtain the correct eventID before calling this tool.
@@ -90,8 +90,8 @@ struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
 struct SearchCacheTool: Tool, @unchecked Sendable {
     typealias Output = String
 
-    let name = "searchPastResponses"
-    let description = """
+    nonisolated let name = "searchPastResponses"
+    nonisolated let description = """
         Searches previously cached VoxiCal responses for calendar information.
         Always call this FIRST before fetchCalendarEvents.
         If it returns a recent, relevant result, use that and skip fetchCalendarEvents.

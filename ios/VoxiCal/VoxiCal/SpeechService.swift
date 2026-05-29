@@ -11,13 +11,8 @@ enum RecordingState: Equatable {
 
 // MARK: - SpeechService
 
-/// Manages voice recording and real-time transcription using iOS 26's SpeechAnalyzer.
-///
-/// Implements a WhatsApp-style recording UX:
-///   Idle  →  tap mic  →  Recording  →  tap Pause / Delete / Send
-///   Paused  →  tap Resume or Send
-///
-/// SpeechAnalyzer runs fully on-device (no server, no rate limit, no 1-minute cap).
+/// Manages voice recording and real-time transcription using SFSpeechRecognizer.
+/// Implements a WhatsApp-style recording UX with Pause/Delete/Send controls.
 @MainActor
 @Observable
 class SpeechService {
@@ -31,9 +26,9 @@ class SpeechService {
     // MARK: - Private
 
     private var audioEngine = AVAudioEngine()
-    private var analyzer: SpeechAnalyzer?
-    private var transcriber: SpeechTranscriber?
-    private var streamTask: Task<Void, Never>?
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private let speechRecognizer = SFSpeechRecognizer(locale: .current)
 
     // MARK: - Permissions
 
@@ -70,36 +65,52 @@ class SpeechService {
         try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
 
-        // Fresh instances for each recording so there's no leftover state
+        // Cancel any prior recognition task
+        recognitionTask?.cancel()
+        recognitionTask = nil
+
+        // Fresh audio engine and request
         audioEngine = AVAudioEngine()
-        let newTranscriber = SpeechTranscriber(locale: .current, preset: .dictation)
-        transcriber = newTranscriber
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
 
-        let newAnalyzer = SpeechAnalyzer(
-            audioInput: audioEngine.inputNode,
-            modules: [newTranscriber]
-        )
-        analyzer = newAnalyzer
+        guard let recognitionRequest else { return }
 
-        // Audio engine must start before the analyzer
+        // Start the audio engine
+        let inputNode = audioEngine.inputNode
         try audioEngine.start()
-        try await newAnalyzer.start()
+
+        // Attach the audio buffer to the request
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 1024,
+            format: inputNode.outputFormat(forBus: 0)
+        ) { buffer, _ in
+            recognitionRequest.append(buffer)
+        }
 
         liveTranscript = ""
         errorMessage = nil
         recordingState = .recording
 
-        // Stream transcription results — task runs on main actor (inherited from @MainActor context)
-        streamTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                for try await result in newTranscriber.results {
+        // Start recognition task
+        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+            Task { @MainActor in
+                guard let self else { return }
+
+                if let result = result {
                     self.liveTranscript = result.bestTranscription.formattedString
                 }
-            } catch {
-                // Stream ends naturally when recording stops; only surface unexpected errors
-                if !Task.isCancelled {
-                    self.errorMessage = "Transcription error: \(error.localizedDescription)"
+
+                // Only surface unexpected errors (suppress expected ones like task cancellation)
+                if let error = error, !Task.isCancelled {
+                    let errorDesc = error.localizedDescription.lowercased()
+                    if !errorDesc.contains("cancelled") && !errorDesc.contains("recognitiontask") {
+                        self.errorMessage = "Transcription error: \(error.localizedDescription)"
+                    }
+                }
+
+                if error != nil {
+                    self.recordingState = .idle
                 }
             }
         }
@@ -138,17 +149,16 @@ class SpeechService {
     // MARK: - Private Teardown
 
     private func teardown() {
-        // Cancel the result-streaming task first so it doesn't race with engine stop
-        streamTask?.cancel()
-        streamTask = nil
-
-        // Stop audio — this naturally ends the analyzer's input stream
+        // Stop audio engine
         audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
 
-        analyzer = nil
-        transcriber = nil
+        // Cancel recognition
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
 
-        // Release the audio session so other apps (e.g. Music) can resume
+        // Release the audio session
         try? AVAudioSession.sharedInstance().setActive(
             false,
             options: .notifyOthersOnDeactivation
