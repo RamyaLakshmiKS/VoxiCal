@@ -69,20 +69,12 @@ class CalendarViewModel {
         switch SystemLanguageModel.default.availability {
         case .available:
             isModelAvailable = true
-        case .unavailable(let reason):
+        case .unavailable:
             isModelAvailable = false
-            errorMessage = unavailabilityMessage(for: reason)
-        }
-    }
-
-    private func unavailabilityMessage(for reason: SystemLanguageModel.UnavailabilityReason) -> String {
-        switch reason {
-        case .deviceNotEligible:
-            return "On-device AI requires an iPhone with an A17 Pro or M-series chip."
-        case .appleIntelligenceNotEnabled:
-            return "Apple Intelligence is not enabled. Go to Settings → Apple Intelligence & Siri."
+            errorMessage = "Apple Intelligence is not available on this device. You need an iPhone with an A17 Pro or M-series chip running iOS 26.4 with Apple Intelligence enabled."
         @unknown default:
-            return "On-device AI is currently unavailable on this device."
+            isModelAvailable = false
+            errorMessage = "Apple Intelligence availability is unknown."
         }
     }
 
