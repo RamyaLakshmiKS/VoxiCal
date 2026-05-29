@@ -217,7 +217,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Plan 
+# Plan
 plan/
+
+# Xcode
+*.xcodeproj/
 
 .DS_Store
