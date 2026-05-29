@@ -72,7 +72,7 @@ class SpeechService {
 
         // Fresh instances for each recording so there's no leftover state
         audioEngine = AVAudioEngine()
-        let newTranscriber = SpeechTranscriber(locale: .current)
+        let newTranscriber = SpeechTranscriber(locale: .current, preset: .dictation)
         transcriber = newTranscriber
 
         let newAnalyzer = SpeechAnalyzer(
