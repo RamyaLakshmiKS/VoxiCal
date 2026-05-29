@@ -13,7 +13,7 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
 
     @Generable
     struct Arguments {
-        @Guide(description: "How many days ahead to fetch, starting from today. Use 1 for today only, 7 for this week, 30 for this month.")
+        @Guide(description: "Number of days to fetch starting from today (inclusive). Use 1 for today only, 2 to include tomorrow, 3 for today through the day after tomorrow, 7 for this week, 30 for this month. Always use 2 when the user asks about tomorrow.")
         var daysAhead: Int
 
         @Guide(description: "Optional keyword to filter events by title. For example 'standup' or 'doctor'. Omit to return all events.")

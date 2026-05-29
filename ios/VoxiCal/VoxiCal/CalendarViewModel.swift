@@ -103,6 +103,14 @@ class CalendarViewModel {
                    your reply for the user to confirm, then call deleteCalendarEvent with the exact \
                    eventID from that fresh fetch result.
 
+                daysAhead values for fetchCalendarEvents (today is day 0, inclusive):
+                - 1 = today only
+                - 2 = today AND tomorrow (use this when the user asks about tomorrow)
+                - 7 = this week
+                - 30 = this month
+                Never use daysAhead:1 when the user asks about tomorrow — that range ends at \
+                midnight tonight and will return zero results for tomorrow's events.
+
                 Event IDs: When fetchCalendarEvents returns events, each line ends with \
                 [eventID:XXX]. Use this exact string when calling deleteCalendarEvent. \
                 Never guess or construct an eventID. Never include eventID values in your \
