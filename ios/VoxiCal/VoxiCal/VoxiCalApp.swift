@@ -1,14 +1,14 @@
 //
-//  Hello_worldApp.swift
-//  Hello world
+//  VoxiCalApp.swift
+//  VoxiCal
 //
-//  Created by Ramya Lakshmi on 5/28/26.
+//  Created by Ramya Lakshmi on 5/29/26.
 //
 
 import SwiftUI
 
 @main
-struct Hello_worldApp: App {
+struct VoxiCalApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

@@ -1,8 +1,8 @@
 //
 //  ContentView.swift
-//  Hello world
+//  VoxiCal
 //
-//  Created by Ramya Lakshmi on 5/28/26.
+//  Created by Ramya Lakshmi on 5/29/26.
 //
 
 import SwiftUI
@@ -13,7 +13,7 @@ struct ContentView: View {
             Image(systemName: "globe")
                 .imageScale(.large)
                 .foregroundStyle(.tint)
-            Text("Hello, Ramya!")
+            Text("Hello, world!")
         }
         .padding()
     }
