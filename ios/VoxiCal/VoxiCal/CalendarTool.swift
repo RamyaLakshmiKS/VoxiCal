@@ -6,6 +6,8 @@ import Foundation
 /// Lets the LLM fetch upcoming calendar events for a given date range.
 /// The model calls this autonomously whenever the user asks about their schedule.
 struct FetchCalendarEventsTool: Tool {
+    typealias Output = String
+
     let name = "fetchCalendarEvents"
     let description = """
         Fetches the user's upcoming calendar events from their iPhone calendar.
@@ -25,7 +27,7 @@ struct FetchCalendarEventsTool: Tool {
     let calendarService: CalendarService
     let cacheService: ResponseCacheService
 
-    func call(arguments: Arguments) async throws -> ToolOutput {
+    func call(arguments: Arguments) async throws -> String {
         let events = try await calendarService.fetchEvents(
             daysAhead: arguments.daysAhead,
             titleFilter: arguments.titleFilter
@@ -44,7 +46,7 @@ struct FetchCalendarEventsTool: Tool {
             eventIDs: events.map(\.id)
         )
 
-        return ToolOutput(result)
+        return result
     }
 }
 
@@ -53,6 +55,8 @@ struct FetchCalendarEventsTool: Tool {
 /// Lets the LLM delete a specific calendar event after the user has confirmed.
 /// The model must name the event in its response before calling this tool.
 struct DeleteCalendarEventTool: Tool {
+    typealias Output = String
+
     let name = "deleteCalendarEvent"
     let description = """
         Permanently deletes a specific calendar event by its ID.
@@ -71,9 +75,9 @@ struct DeleteCalendarEventTool: Tool {
 
     let calendarService: CalendarService
 
-    func call(arguments: Arguments) async throws -> ToolOutput {
+    func call(arguments: Arguments) async throws -> String {
         try await calendarService.deleteEvent(id: arguments.eventID)
-        return ToolOutput("Deleted '\(arguments.eventTitle)' from your calendar.")
+        return "Deleted '\(arguments.eventTitle)' from your calendar."
     }
 }
 
@@ -84,6 +88,8 @@ struct DeleteCalendarEventTool: Tool {
 /// from disk, the LLM avoids re-fetching the same calendar data repeatedly, keeping
 /// the live session transcript lean and within the 4,096-token limit.
 struct SearchCacheTool: Tool {
+    typealias Output = String
+
     let name = "searchPastResponses"
     let description = """
         Searches previously cached VoxiCal responses for calendar information.
@@ -100,11 +106,11 @@ struct SearchCacheTool: Tool {
 
     let cacheService: ResponseCacheService
 
-    func call(arguments: Arguments) async throws -> ToolOutput {
+    func call(arguments: Arguments) async throws -> String {
         let matches = await cacheService.search(query: arguments.query)
 
         guard !matches.isEmpty else {
-            return ToolOutput("No cached responses found. Proceed to call fetchCalendarEvents.")
+            return "No cached responses found. Proceed to call fetchCalendarEvents."
         }
 
         let formatted = matches
@@ -114,6 +120,6 @@ struct SearchCacheTool: Tool {
             }
             .joined(separator: "\n\n---\n\n")
 
-        return ToolOutput(formatted)
+        return formatted
     }
 }
