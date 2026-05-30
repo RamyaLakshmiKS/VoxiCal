@@ -26,13 +26,6 @@ struct ContentView: View {
             .navigationTitle("VoxiCal")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                #if DEBUG
-                ToolbarItem(placement: .topBarLeading) {
-                    NavigationLink(destination: EvalView()) {
-                        Image(systemName: "testtube.2")
-                    }
-                }
-                #endif
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         viewModel.clearConversation()
