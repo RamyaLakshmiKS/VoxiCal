@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import os.log
 
 // MARK: - ChatMessage
 
@@ -21,11 +22,13 @@ struct ChatMessage: Identifiable {
 @MainActor
 @Observable
 class CalendarViewModel {
+    
+    // MARK: - Logging
+    private let logger = Logger(subsystem: "com.ramya-app.VoxiCal.calendar", category: "ViewModel")
 
     // MARK: - Services (shared with tools)
 
     let calendarService = CalendarService()
-    let cacheService    = ResponseCacheService()
     let speechService   = SpeechService()
     let ttsService      = TTSService()
 
@@ -40,6 +43,56 @@ class CalendarViewModel {
     var isModelAvailable         = false
     var errorMessage: String?    = nil
     var showSettingsAlert        = false
+
+    // MARK: - Agent Instructions
+
+    /// Shared between the live session and eval sessions — single source of truth.
+    static let agentInstructions = """
+        You are VoxiCal, a calm and concise iOS calendar assistant. \
+        You help users understand and manage their schedule using only the tools provided.
+
+        Tool usage:
+        - Call fetchCalendarEvents to retrieve the user's schedule.
+        - To delete an event: ALWAYS call fetchCalendarEvents first to get the current \
+          event list. Identify the event, name it in your reply for the user to confirm, \
+          then call deleteCalendarEvent with the exact eventID from that fetch result.
+
+        daysAhead values for fetchCalendarEvents (today = day 0, inclusive):
+        - 1 = today only
+        - 2 = today AND tomorrow (always use 2 when user asks about tomorrow)
+        - 7 = this week
+        - 30 = this month
+        - 60 = next month
+        - Up to 180 for queries spanning several months
+        Never use daysAhead:1 when the user asks about tomorrow.
+
+        daysBack values for fetchCalendarEvents (past lookups):
+        - 0 = no history (default)
+        - 7 = last week
+        - 30 = last month
+        - Up to 180 (≈ 6 months back)
+        Combine daysBack with daysAhead when the user asks about a range that spans past and future.
+
+        Event IDs: When fetchCalendarEvents returns events, each line ends with \
+        [eventID:XXX]. Use this exact string when calling deleteCalendarEvent. \
+        Never guess or construct an eventID. Never include eventID values in your \
+        replies to the user.
+
+        Accuracy — follow these rules without exception:
+        - ONLY report events that appear verbatim in the fetchCalendarEvents tool response.
+        - If the tool returns "No events found", tell the user there are no events. \
+          Never invent or imply a meeting exists.
+        - If events are returned but none match the person, company, or email the user \
+          asked about, say explicitly that no matching meeting was found. \
+          Do not assume a partial title match counts as a match.
+        - Inventing a "yes, you have a meeting" when none exists is a critical error. \
+          When in doubt, say no and suggest the user check their calendar app directly.
+
+        Response style:
+        - Format dates conversationally: "Today at 2 pm", "This Monday at 9 am", "June 3rd".
+        - Keep replies to two sentences maximum unless listing multiple events.
+        - When listing events, use a short bullet format: "• Title — Day at Time".
+        """
 
     // MARK: - Setup
 
@@ -69,12 +122,15 @@ class CalendarViewModel {
         switch SystemLanguageModel.default.availability {
         case .available:
             isModelAvailable = true
+            logger.info("✓ Apple Intelligence model is available")
         case .unavailable:
             isModelAvailable = false
             errorMessage = "Apple Intelligence is not available on this device. You need an iPhone with an A17 Pro or M-series chip running iOS 26.4 with Apple Intelligence enabled."
+            logger.warning("✗ Apple Intelligence model is unavailable")
         @unknown default:
             isModelAvailable = false
             errorMessage = "Apple Intelligence availability is unknown."
+            logger.error("✗ Unknown Apple Intelligence availability state")
         }
     }
 
@@ -82,47 +138,17 @@ class CalendarViewModel {
 
     private func buildSession() {
         let tools: [any Tool] = [
-            FetchCalendarEventsTool(calendarService: calendarService, cacheService: cacheService),
-            DeleteCalendarEventTool(calendarService: calendarService),
-            SearchCacheTool(cacheService: cacheService)
+            FetchCalendarEventsTool(calendarService: calendarService),
+            DeleteCalendarEventTool(calendarService: calendarService)
         ]
+        
+        logger.info("Building LanguageModelSession with 2 tools: fetchCalendarEvents, deleteCalendarEvent")
 
         // Instructions are a static developer string — never interpolate user input here.
         // The model reads these once when the session is created.
         session = LanguageModelSession(
             tools: tools,
-            instructions: """
-                You are VoxiCal, a calm and concise iOS calendar assistant. \
-                You help users understand and manage their schedule using only the tools provided.
-
-                Tool usage order:
-                1. Always call searchPastResponses first to check for a recent cached answer.
-                2. Only call fetchCalendarEvents if the cache has no useful or fresh result.
-                3. To delete an event: ALWAYS call fetchCalendarEvents first — never rely on a \
-                   cached eventID — to get the current event list. Identify the event, name it in \
-                   your reply for the user to confirm, then call deleteCalendarEvent with the exact \
-                   eventID from that fresh fetch result.
-
-                daysAhead values for fetchCalendarEvents (today is day 0, inclusive):
-                - 1 = today only
-                - 2 = today AND tomorrow (use this when the user asks about tomorrow)
-                - 7 = this week
-                - 30 = this month
-                Never use daysAhead:1 when the user asks about tomorrow — that range ends at \
-                midnight tonight and will return zero results for tomorrow's events.
-
-                Event IDs: When fetchCalendarEvents returns events, each line ends with \
-                [eventID:XXX]. Use this exact string when calling deleteCalendarEvent. \
-                Never guess or construct an eventID. Never include eventID values in your \
-                replies to the user.
-
-                Response style:
-                - Format dates conversationally: "Today at 2 pm", "This Monday at 9 am", "June 3rd".
-                - Keep replies to two sentences maximum unless listing multiple events.
-                - When listing events, use a short bullet format: "• Title — Day at Time".
-                - Never invent or guess events. Only report what the tools return.
-                - If the calendar has no events in a time range, say so plainly and briefly.
-                """
+            instructions: CalendarViewModel.agentInstructions
         )
     }
 
@@ -133,13 +159,19 @@ class CalendarViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isProcessing else { return }
 
+        print("[USER] \(trimmed)")
+        logger.info("[USER] \(trimmed, privacy: .public)")
+        
         // Auto-reset conversation after 16 messages (8 turns) to prevent context window overflow
         if messages.count >= 16 {
+            print("Context window approaching limit (16 messages) — clearing conversation")
+            logger.info("Context window approaching limit (16 messages) — clearing conversation")
             clearConversation()
         }
 
         guard let session else {
             errorMessage = "Session not ready — please wait a moment and try again."
+            logger.error("Session is nil when sending message")
             return
         }
 
@@ -157,17 +189,16 @@ class CalendarViewModel {
             let response = try await session.respond(to: trimmed)
             let responseText = response.content
 
+            print("[AGENT] \(responseText)")
+            logger.info("[AGENT] \(responseText, privacy: .public)")
             messages.append(ChatMessage(role: .assistant, text: responseText))
-
-            // Persist to cache so SearchCacheTool can serve repeat queries
-            // without going back to EventKit or growing the live transcript.
-            await cacheService.store(query: trimmed, response: responseText)
 
             // Speak the response — audio session handoff handled inside TTSService
             ttsService.speak(responseText)
 
         } catch {
             let friendly = friendlyError(from: error)
+            logger.error("Error during agent response: \(error.localizedDescription)")
             messages.append(ChatMessage(role: .assistant, text: friendly))
         }
 

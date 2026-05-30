@@ -26,6 +26,19 @@ struct ContentView: View {
             .navigationTitle("VoxiCal")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                #if DEBUG
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Button {
+                            Task { _ = await runEvaluationSuite() }
+                        } label: {
+                            Label("Run Evals", systemImage: "checkmark.circle")
+                        }
+                    } label: {
+                        Image(systemName: "testtube.2")
+                    }
+                }
+                #endif
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         viewModel.clearConversation()

@@ -39,7 +39,19 @@
         {
             "label": "Stream iPhone Logs",
             "type": "shell",
-            "command": "idevicesyslog -u 00008150-000A31A03602401C | grep --line-buffered -i VoxiCal",
+            "command": "idevicesyslog -u 00008150-000A31A03602401C | grep --line-buffered -i VoxiCal | grep -v '<Debug>'",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Stream App-Level Logs",
+            "type": "shell",
+            "command": "idevicesyslog -u 00008150-000A31A03602401C 2>/dev/null | grep -E '\\[USER\\]|\\[AGENT\\]|\\[TOOL'",
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",
