@@ -1,6 +1,7 @@
 import Foundation
 import FoundationModels
 import SwiftUI
+import os.log
 
 // MARK: - CalendarServiceProtocol
 
@@ -421,3 +422,43 @@ private let categoryBNegativeScenarios: [EvalScenario] = [
 /// Access point for eval infrastructure. Contains all scenarios (positive + negative).
 /// Use EvalRunner to execute these scenarios and check for hallucinations.
 let allEvaluationScenarios = categoryAScenarios + categoryBScenarios + categoryBNegativeScenarios
+
+// MARK: - Test Harness
+
+/// Runs all eval scenarios and logs results to console and os.log.
+/// Returns (passed, failed) counts.
+@MainActor
+func runEvaluationSuite() async -> (passed: Int, failed: Int) {
+    let runner = EvalRunner()
+    await runner.run(scenarios: allEvaluationScenarios)
+
+    let logger = Logger(subsystem: "com.ramya-app.VoxiCal.evals", category: "TestHarness")
+
+    print("\n" + String(repeating: "=", count: 70))
+    print("EVAL SUITE RESULTS")
+    print(String(repeating: "=", count: 70))
+
+    let passed = runner.results.filter(\.passed).count
+    let failed = runner.results.count - passed
+
+    for result in runner.results {
+        let status = result.passed ? "✓ PASS" : "✗ FAIL"
+        print("\n[\(status)] \(result.scenarioName)")
+        print("  Category: \(result.category)")
+        print("  User: \(result.userMessage)")
+        print("  Tool calls: \(result.fetchCallCount)")
+
+        for grade in result.gradingResults {
+            let icon = grade.passed ? "  ✓" : "  ✗"
+            print("\(icon) \(grade.graderName): \(grade.message)")
+        }
+    }
+
+    print("\n" + String(repeating: "=", count: 70))
+    print("SUMMARY: \(passed)/\(runner.results.count) passed, \(failed) failed")
+    print(String(repeating: "=", count: 70) + "\n")
+
+    logger.info("Eval suite: \(passed)/\(runner.results.count) passed")
+
+    return (passed, failed)
+}

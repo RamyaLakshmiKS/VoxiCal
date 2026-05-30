@@ -114,6 +114,13 @@ class CalendarViewModel {
 
         buildSession()
         appendWelcome()
+
+        #if DEBUG
+        // Run eval suite in background on first launch
+        Task.detached {
+            _ = await runEvaluationSuite()
+        }
+        #endif
     }
 
     // MARK: - Model Availability
