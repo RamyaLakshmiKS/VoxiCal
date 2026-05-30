@@ -159,10 +159,12 @@ class CalendarViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isProcessing else { return }
 
-        logger.info("[USER] \(trimmed)")
+        print("[USER] \(trimmed)")
+        logger.info("[USER] \(trimmed, privacy: .public)")
         
         // Auto-reset conversation after 16 messages (8 turns) to prevent context window overflow
         if messages.count >= 16 {
+            print("Context window approaching limit (16 messages) — clearing conversation")
             logger.info("Context window approaching limit (16 messages) — clearing conversation")
             clearConversation()
         }
@@ -187,7 +189,8 @@ class CalendarViewModel {
             let response = try await session.respond(to: trimmed)
             let responseText = response.content
 
-            logger.info("[AGENT] \(responseText)")
+            print("[AGENT] \(responseText)")
+            logger.info("[AGENT] \(responseText, privacy: .public)")
             messages.append(ChatMessage(role: .assistant, text: responseText))
 
             // Speak the response — audio session handoff handled inside TTSService

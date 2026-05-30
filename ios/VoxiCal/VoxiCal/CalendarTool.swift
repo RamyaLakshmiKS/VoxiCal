@@ -39,7 +39,10 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
 
     func call(arguments: Arguments) async throws -> String {
         let filterStr = arguments.titleFilter.map { "filter: \($0)" } ?? "no filter"
-        logger.info("[TOOL: fetchCalendarEvents] daysAhead=\(arguments.daysAhead), daysBack=\(arguments.daysBack), \(filterStr)")
+        let toolMsg = "[TOOL: fetchCalendarEvents] daysAhead=\(arguments.daysAhead), daysBack=\(arguments.daysBack), \(filterStr)"
+        print(toolMsg)
+        logger.info("\(toolMsg, privacy: .public)")
+        
         let events = try await calendarService.fetchEvents(
             daysAhead: arguments.daysAhead,
             daysBack: arguments.daysBack,
@@ -47,11 +50,15 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
         )
 
         if events.isEmpty {
-            logger.info("[TOOL RESULT] No events found")
+            let resultMsg = "[TOOL RESULT] No events found"
+            print(resultMsg)
+            logger.info("\(resultMsg, privacy: .public)")
             return "No events found for the requested time range."
         }
         
-        logger.info("[TOOL RESULT] Returned \(events.count) events")
+        let resultMsg = "[TOOL RESULT] Returned \(events.count) events"
+        print(resultMsg)
+        logger.info("\(resultMsg, privacy: .public)")
 
         return events.map { event in
             var parts = [event.description]
@@ -87,9 +94,16 @@ struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
     let calendarService: any CalendarServiceProtocol
 
     func call(arguments: Arguments) async throws -> String {
-        logger.info("[TOOL: deleteCalendarEvent] eventID=\(arguments.eventID), title=\(arguments.eventTitle)")
+        let toolMsg = "[TOOL: deleteCalendarEvent] eventID=\(arguments.eventID), title=\(arguments.eventTitle)"
+        print(toolMsg)
+        logger.info("\(toolMsg, privacy: .public)")
+        
         try await calendarService.deleteEvent(id: arguments.eventID)
-        logger.info("[TOOL RESULT] Successfully deleted event: \(arguments.eventTitle)")
+        
+        let resultMsg = "[TOOL RESULT] Successfully deleted event: \(arguments.eventTitle)"
+        print(resultMsg)
+        logger.info("\(resultMsg, privacy: .public)")
+        
         return "Deleted '\(arguments.eventTitle)' from your calendar."
     }
 }
