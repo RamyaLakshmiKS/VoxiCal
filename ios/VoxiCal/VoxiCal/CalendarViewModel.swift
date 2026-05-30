@@ -116,8 +116,9 @@ class CalendarViewModel {
         appendWelcome()
 
         #if DEBUG
-        // Run eval suite in background on first launch
-        Task.detached {
+        // Run eval suite after 3 seconds (non-blocking) so UI is ready
+        Task {
+            try await Task.sleep(for: .seconds(3))
             _ = await runEvaluationSuite()
         }
         #endif
