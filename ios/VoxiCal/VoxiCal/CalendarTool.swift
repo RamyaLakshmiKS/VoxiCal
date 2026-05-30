@@ -1,5 +1,6 @@
 import FoundationModels
 import Foundation
+import os.log
 
 // MARK: - FetchCalendarEventsTool
 
@@ -10,6 +11,8 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
 
     nonisolated let name = "fetchCalendarEvents"
     let description = "Fetches calendar events. Call this when the user asks about their schedule, meetings, or appointments — past or future."
+    
+    private let logger = Logger(subsystem: "com.ramya-app.VoxiCal.calendar", category: "FetchTool")
 
     @Generable
     struct Arguments {
@@ -35,6 +38,8 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
     let calendarService: any CalendarServiceProtocol
 
     func call(arguments: Arguments) async throws -> String {
+        let filterStr = arguments.titleFilter.map { "filter: \($0)" } ?? "no filter"
+        logger.info("[TOOL: fetchCalendarEvents] daysAhead=\(arguments.daysAhead), daysBack=\(arguments.daysBack), \(filterStr)")
         let events = try await calendarService.fetchEvents(
             daysAhead: arguments.daysAhead,
             daysBack: arguments.daysBack,
@@ -42,8 +47,11 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
         )
 
         if events.isEmpty {
+            logger.info("[TOOL RESULT] No events found")
             return "No events found for the requested time range."
         }
+        
+        logger.info("[TOOL RESULT] Returned \(events.count) events")
 
         return events.map { event in
             var parts = [event.description]
@@ -64,6 +72,8 @@ struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
 
     nonisolated let name = "deleteCalendarEvent"
     let description = "Deletes a calendar event by ID. Only call AFTER naming the event in your response and the user confirms. Always call fetchCalendarEvents first to get the correct eventID."
+    
+    private let logger = Logger(subsystem: "com.ramya-app.VoxiCal.calendar", category: "DeleteTool")
 
     @Generable
     struct Arguments {
@@ -77,7 +87,9 @@ struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
     let calendarService: any CalendarServiceProtocol
 
     func call(arguments: Arguments) async throws -> String {
+        logger.info("[TOOL: deleteCalendarEvent] eventID=\(arguments.eventID), title=\(arguments.eventTitle)")
         try await calendarService.deleteEvent(id: arguments.eventID)
+        logger.info("[TOOL RESULT] Successfully deleted event: \(arguments.eventTitle)")
         return "Deleted '\(arguments.eventTitle)' from your calendar."
     }
 }

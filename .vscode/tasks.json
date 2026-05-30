@@ -47,6 +47,18 @@
             },
             "isBackground": true,
             "problemMatcher": []
+        },
+        {
+            "label": "Stream App-Level Logs",
+            "type": "shell",
+            "command": "idevicesyslog -u 00008150-000A31A03602401C | grep --line-buffered 'com.ramya-app.VoxiCal.calendar'",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "isBackground": true,
+            "problemMatcher": []
         }
     ]
 }

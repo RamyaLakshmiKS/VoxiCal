@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import os.log
 
 // MARK: - ChatMessage
 
@@ -21,6 +22,9 @@ struct ChatMessage: Identifiable {
 @MainActor
 @Observable
 class CalendarViewModel {
+    
+    // MARK: - Logging
+    private let logger = Logger(subsystem: "com.ramya-app.VoxiCal.calendar", category: "ViewModel")
 
     // MARK: - Services (shared with tools)
 
@@ -118,12 +122,15 @@ class CalendarViewModel {
         switch SystemLanguageModel.default.availability {
         case .available:
             isModelAvailable = true
+            logger.info("✓ Apple Intelligence model is available")
         case .unavailable:
             isModelAvailable = false
             errorMessage = "Apple Intelligence is not available on this device. You need an iPhone with an A17 Pro or M-series chip running iOS 26.4 with Apple Intelligence enabled."
+            logger.warning("✗ Apple Intelligence model is unavailable")
         @unknown default:
             isModelAvailable = false
             errorMessage = "Apple Intelligence availability is unknown."
+            logger.error("✗ Unknown Apple Intelligence availability state")
         }
     }
 
@@ -134,6 +141,8 @@ class CalendarViewModel {
             FetchCalendarEventsTool(calendarService: calendarService),
             DeleteCalendarEventTool(calendarService: calendarService)
         ]
+        
+        logger.info("Building LanguageModelSession with 2 tools: fetchCalendarEvents, deleteCalendarEvent")
 
         // Instructions are a static developer string — never interpolate user input here.
         // The model reads these once when the session is created.
@@ -150,13 +159,17 @@ class CalendarViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isProcessing else { return }
 
+        logger.info("[USER] \(trimmed)")
+        
         // Auto-reset conversation after 16 messages (8 turns) to prevent context window overflow
         if messages.count >= 16 {
+            logger.info("Context window approaching limit (16 messages) — clearing conversation")
             clearConversation()
         }
 
         guard let session else {
             errorMessage = "Session not ready — please wait a moment and try again."
+            logger.error("Session is nil when sending message")
             return
         }
 
@@ -174,6 +187,7 @@ class CalendarViewModel {
             let response = try await session.respond(to: trimmed)
             let responseText = response.content
 
+            logger.info("[AGENT] \(responseText)")
             messages.append(ChatMessage(role: .assistant, text: responseText))
 
             // Speak the response — audio session handoff handled inside TTSService
@@ -181,6 +195,7 @@ class CalendarViewModel {
 
         } catch {
             let friendly = friendlyError(from: error)
+            logger.error("Error during agent response: \(error.localizedDescription)")
             messages.append(ChatMessage(role: .assistant, text: friendly))
         }
 
