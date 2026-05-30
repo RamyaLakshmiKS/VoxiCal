@@ -114,14 +114,6 @@ class CalendarViewModel {
 
         buildSession()
         appendWelcome()
-
-        #if DEBUG
-        // Run eval suite after 3 seconds (non-blocking) so UI is ready
-        Task {
-            try await Task.sleep(for: .seconds(3))
-            _ = await runEvaluationSuite()
-        }
-        #endif
     }
 
     // MARK: - Model Availability

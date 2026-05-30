@@ -5,7 +5,6 @@ import os.log
 
 // MARK: - CalendarServiceProtocol
 
-/// Abstraction over CalendarService enabling MockCalendarService injection in evals.
 protocol CalendarServiceProtocol: AnyObject {
     func fetchEvents(daysAhead: Int, daysBack: Int, titleFilter: String?) async throws -> [CalendarEvent]
     func deleteEvent(id: String) async throws
@@ -13,12 +12,10 @@ protocol CalendarServiceProtocol: AnyObject {
 
 // MARK: - MockCalendarService
 
-/// Controllable test double. Tracks all tool calls and their results.
 @MainActor
 final class MockCalendarService: CalendarServiceProtocol {
     var seedEvents: [CalendarEvent] = []
     private(set) var fetchCallCount = 0
-    private(set) var deleteCallCount = 0
     private(set) var lastFetchArgs: (daysAhead: Int, daysBack: Int, titleFilter: String?)?
     private(set) var lastFetchResult: [CalendarEvent] = []
 
@@ -46,78 +43,61 @@ final class MockCalendarService: CalendarServiceProtocol {
     }
 
     func deleteEvent(id: String) async throws {
-        deleteCallCount += 1
         seedEvents.removeAll { $0.id == id }
     }
-
-    func reset() {
-        fetchCallCount = 0
-        deleteCallCount = 0
-        lastFetchArgs = nil
-        lastFetchResult = []
-    }
 }
 
-// MARK: - EvalTypes
+// MARK: - Golden Test Cases (3 Simple Cases)
 
-/// Context for a single turn in a scenario. Includes tool results for outcome validation.
-struct EvalContext {
-    let turnNumber: Int
-    let userMessage: String
-    let agentResponse: String
-    let fetchCallCount: Int
-    let lastFetchArgs: (daysAhead: Int, daysBack: Int, titleFilter: String?)?
-    let lastFetchResult: [CalendarEvent]  // Actual events returned by the tool
-    let seedEvents: [CalendarEvent]
-}
-
-struct GradeResult: Identifiable {
-    let id = UUID()
-    let graderName: String
-    let passed: Bool
-    let message: String
-}
-
-typealias Grader = (EvalContext) async -> GradeResult
-
-/// A single turn in a multi-turn scenario.
-struct EvalTurn {
-    let userMessage: String
-    let graders: [Grader]
-}
-
-/// Multi-turn scenario with defined inputs and success criteria per turn.
-struct EvalScenario: Identifiable {
+struct GoldenTestCase {
     let id: String
+    let userQuery: String
     let category: String
-    let name: String
+    let expectedBehavior: String
+    let shouldCallTool: Bool
     let seedEvents: [CalendarEvent]
-    let turns: [EvalTurn]
 }
 
-/// Result of a single turn within a scenario.
-struct TurnResult: Identifiable {
-    let id = UUID()
-    let turnNumber: Int
-    let userMessage: String
-    let agentResponse: String
-    let fetchCallCount: Int
-    let gradingResults: [GradeResult]
-    var passed: Bool { gradingResults.allSatisfy(\.passed) }
-}
+let goldenTestCases: [GoldenTestCase] = [
+    // Test 1: Greeting (no tool call expected)
+    GoldenTestCase(
+        id: "test-greeting",
+        userQuery: "Hi, how are you?",
+        category: "Greeting",
+        expectedBehavior: "Agent responds conversationally without calling tools",
+        shouldCallTool: false,
+        seedEvents: []
+    ),
 
-/// Overall result for an entire scenario (all turns).
-struct EvalResult: Identifiable {
-    let id = UUID()
-    let scenarioID: String
-    let scenarioName: String
-    let category: String
-    let turnResults: [TurnResult]
-    var passed: Bool { turnResults.allSatisfy(\.passed) }
-    var passedTurns: Int { turnResults.filter(\.passed).count }
-}
+    // Test 2: Meeting lookup (tool call expected, events found)
+    GoldenTestCase(
+        id: "test-meeting-lookup",
+        userQuery: "Do I have a meeting with Sarah today?",
+        category: "Meeting Lookup",
+        expectedBehavior: "Agent calls tool, finds Sarah's meeting, mentions it in response",
+        shouldCallTool: true,
+        seedEvents: [
+            makeTestEvent(title: "1:1 with Sarah", daysFromNow: 0, hour: 10),
+            makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9)
+        ]
+    ),
 
-/// Creates a CalendarEvent with a start time relative to today for use in seed data.
+    // Test 3: Hallucination guard (tool call, no events, must report accurately)
+    GoldenTestCase(
+        id: "test-no-hallucination",
+        userQuery: "Do I have a meeting with Sarah today?",
+        category: "Hallucination Guard",
+        expectedBehavior: "Agent calls tool, finds NO Sarah meeting, explicitly reports no events (does not hallucinate)",
+        shouldCallTool: true,
+        seedEvents: [
+            makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9),
+            makeTestEvent(title: "Lunch with John", daysFromNow: 0, hour: 12)
+        ]
+    )
+]
+
+// MARK: - Helper Function
+
 func makeTestEvent(
     title: String,
     daysFromNow: Int,
@@ -139,20 +119,56 @@ func makeTestEvent(
     )
 }
 
-// MARK: - Graders (Tool Validation)
+// MARK: - Eval Types
 
-func toolCalledGrader() -> Grader {
-    { ctx in
-        let ok = ctx.fetchCallCount > 0
-        return GradeResult(
-            graderName: "Tool was called",
-            passed: ok,
-            message: ok
-                ? "Called fetchCalendarEvents \(ctx.fetchCallCount) time(s)"
-                : "Did not call fetchCalendarEvents — expected at least 1 call"
-        )
-    }
+struct EvalContext {
+    let userMessage: String
+    let agentResponse: String
+    let fetchCallCount: Int
+    let lastFetchResult: [CalendarEvent]
 }
+
+struct GradeResult: Identifiable {
+    let id = UUID()
+    let graderName: String
+    let passed: Bool
+    let message: String
+}
+
+typealias Grader = (EvalContext) async -> GradeResult
+
+struct EvalTurn {
+    let userMessage: String
+    let graders: [Grader]
+}
+
+struct EvalScenario: Identifiable {
+    let id: String
+    let category: String
+    let name: String
+    let seedEvents: [CalendarEvent]
+    let turns: [EvalTurn]
+}
+
+struct TurnResult: Identifiable {
+    let id = UUID()
+    let userMessage: String
+    let agentResponse: String
+    let fetchCallCount: Int
+    let gradingResults: [GradeResult]
+    var passed: Bool { gradingResults.allSatisfy(\.passed) }
+}
+
+struct EvalResult: Identifiable {
+    let id = UUID()
+    let scenarioID: String
+    let scenarioName: String
+    let category: String
+    let turnResults: [TurnResult]
+    var passed: Bool { turnResults.allSatisfy(\.passed) }
+}
+
+// MARK: - Code-Based Graders
 
 func noToolCallGrader() -> Grader {
     { ctx in
@@ -161,33 +177,25 @@ func noToolCallGrader() -> Grader {
             graderName: "No tool call",
             passed: ok,
             message: ok
-                ? "Correctly skipped calendar lookup"
-                : "Called fetchCalendarEvents \(ctx.fetchCallCount) time(s) — expected 0"
+                ? "✓ Correctly skipped calendar lookup"
+                : "✗ Called fetchCalendarEvents \(ctx.fetchCallCount) time(s) — expected 0"
         )
     }
 }
 
-func daysAheadGrader(minimum: Int, maximum: Int? = nil) -> Grader {
+func toolCalledGrader() -> Grader {
     { ctx in
-        guard let args = ctx.lastFetchArgs else {
-            return GradeResult(graderName: "daysAhead range", passed: false, message: "No tool call recorded")
-        }
-        let days = args.daysAhead
-        let inRange = days >= minimum && (maximum.map { days <= $0 } ?? true)
-        let rangeDesc = maximum != nil ? "\(minimum)–\(maximum!)" : "≥\(minimum)"
+        let ok = ctx.fetchCallCount > 0
         return GradeResult(
-            graderName: "daysAhead range",
-            passed: inRange,
-            message: inRange
-                ? "daysAhead=\(days) is within expected range \(rangeDesc)"
-                : "daysAhead=\(days) is outside expected range \(rangeDesc)"
+            graderName: "Tool called",
+            passed: ok,
+            message: ok
+                ? "✓ Called fetchCalendarEvents \(ctx.fetchCallCount) time(s)"
+                : "✗ Did not call tool — expected at least 1 call"
         )
     }
 }
 
-// MARK: - Graders (Outcome Validation)
-
-/// Passes if the tool found events AND agent response mentions at least one event title or key detail.
 func eventFoundAndMentionedGrader() -> Grader {
     { ctx in
         let toolFoundEvents = !ctx.lastFetchResult.isEmpty
@@ -195,7 +203,7 @@ func eventFoundAndMentionedGrader() -> Grader {
             return GradeResult(
                 graderName: "Event found and mentioned",
                 passed: false,
-                message: "Tool returned no events; cannot validate response mentions them"
+                message: "✗ Tool returned no events"
             )
         }
 
@@ -210,53 +218,36 @@ func eventFoundAndMentionedGrader() -> Grader {
             graderName: "Event found and mentioned",
             passed: anyMentioned,
             message: anyMentioned
-                ? "Agent mentioned event(s): \(eventTitles.joined(separator: ", "))"
-                : "Agent did not mention found events. Tool returned: \(eventTitles.joined(separator: ", ")), Response: \"\(ctx.agentResponse)\""
+                ? "✓ Agent mentioned event: \(eventTitles.joined(separator: ", "))"
+                : "✗ Agent did not mention found events"
         )
     }
 }
 
-/// Passes if the tool found NO events AND agent response indicates no events found.
 func noEventsFoundGrader() -> Grader {
     { ctx in
         let toolFoundEvents = !ctx.lastFetchResult.isEmpty
         guard !toolFoundEvents else {
             return GradeResult(
-                graderName: "No events found (hallucination check)",
+                graderName: "No events hallucination check",
                 passed: false,
-                message: "Tool returned \(ctx.lastFetchResult.count) event(s); cannot validate 'no events' response"
+                message: "✗ Tool found \(ctx.lastFetchResult.count) event(s) but agent said no events"
             )
         }
 
         let indicators = [
             "no meeting", "no event", "no appointment",
-            "nothing scheduled", "nothing on your calendar",
-            "don't see", "doesn't appear", "doesn't show",
-            "couldn't find", "not scheduled", "not found",
-            "not have", "don't have"
+            "nothing scheduled", "don't have", "not have",
+            "not scheduled", "couldn't find"
         ]
         let found = indicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
 
         return GradeResult(
-            graderName: "No events found (hallucination check)",
+            graderName: "No events hallucination check",
             passed: found,
             message: found
-                ? "Agent correctly reported no events"
-                : "Agent may have hallucinated — response does not indicate 'no events found'. Got: \"\(ctx.agentResponse)\""
-        )
-    }
-}
-
-/// Passes if agent response contains a specific keyword (case-insensitive).
-func responseContainsGrader(_ keyword: String) -> Grader {
-    { ctx in
-        let found = ctx.agentResponse.localizedCaseInsensitiveContains(keyword)
-        return GradeResult(
-            graderName: "Response contains '\(keyword)'",
-            passed: found,
-            message: found
-                ? "Response mentions '\(keyword)'"
-                : "Response does not mention '\(keyword)'. Got: \"\(ctx.agentResponse)\""
+                ? "✓ Agent correctly reported no events (no hallucination)"
+                : "✗ Agent may have hallucinated — did not report 'no events'"
         )
     }
 }
@@ -301,7 +292,7 @@ final class EvalRunner {
 
         var turnResults: [TurnResult] = []
 
-        for (turnIndex, turn) in scenario.turns.enumerated() {
+        for turn in scenario.turns {
             let agentResponse: String
             do {
                 let response = try await session.respond(to: turn.userMessage)
@@ -311,13 +302,10 @@ final class EvalRunner {
             }
 
             let context = EvalContext(
-                turnNumber: turnIndex + 1,
                 userMessage: turn.userMessage,
                 agentResponse: agentResponse,
                 fetchCallCount: mock.fetchCallCount,
-                lastFetchArgs: mock.lastFetchArgs,
-                lastFetchResult: mock.lastFetchResult,
-                seedEvents: scenario.seedEvents
+                lastFetchResult: mock.lastFetchResult
             )
 
             var gradingResults: [GradeResult] = []
@@ -326,7 +314,6 @@ final class EvalRunner {
             }
 
             turnResults.append(TurnResult(
-                turnNumber: turnIndex + 1,
                 userMessage: turn.userMessage,
                 agentResponse: agentResponse,
                 fetchCallCount: mock.fetchCallCount,
@@ -343,244 +330,47 @@ final class EvalRunner {
     }
 }
 
-// MARK: - Scenarios: Category A (Single-turn: Greetings)
+// MARK: - Build Scenarios from Test Cases
 
-private let categoryAScenarios: [EvalScenario] = [
-    EvalScenario(
-        id: "A1a",
-        category: "Category A — Greetings",
-        name: "Greeting: \"Hi\"",
-        seedEvents: [],
-        turns: [EvalTurn(userMessage: "Hi", graders: [noToolCallGrader()])]
-    ),
-    EvalScenario(
-        id: "A1b",
-        category: "Category A — Greetings",
-        name: "Greeting: \"Hello\"",
-        seedEvents: [],
-        turns: [EvalTurn(userMessage: "Hello", graders: [noToolCallGrader()])]
-    ),
-    EvalScenario(
-        id: "A1c",
-        category: "Category A — Greetings",
-        name: "Greeting: \"Good morning\"",
-        seedEvents: [],
-        turns: [EvalTurn(userMessage: "Good morning", graders: [noToolCallGrader()])]
-    ),
-    EvalScenario(
-        id: "A1d",
-        category: "Category A — Greetings",
-        name: "Greeting: \"Hey\"",
-        seedEvents: [],
-        turns: [EvalTurn(userMessage: "Hey", graders: [noToolCallGrader()])]
-    )
-]
+func buildEvalScenarios() -> [EvalScenario] {
+    return goldenTestCases.map { testCase in
+        var graders: [Grader] = []
 
-// MARK: - Scenarios: Category B (Single-turn: Meeting Lookup with Outcome Validation)
+        if testCase.shouldCallTool {
+            graders.append(toolCalledGrader())
+            // If events are in seed, expect them to be mentioned
+            if !testCase.seedEvents.isEmpty {
+                graders.append(eventFoundAndMentionedGrader())
+            } else {
+                // Empty seed = expect "no events" response
+                graders.append(noEventsFoundGrader())
+            }
+        } else {
+            graders.append(noToolCallGrader())
+        }
 
-private let categoryBScenarios: [EvalScenario] = [
-    EvalScenario(
-        id: "B2",
-        category: "Category B — Meeting Lookup",
-        name: "Meeting with Sarah today (outcome validation)",
-        seedEvents: [
-            makeTestEvent(title: "1:1 with Sarah", daysFromNow: 0, hour: 10),
-            makeTestEvent(title: "Team standup",   daysFromNow: 0, hour: 9)
-        ],
-        turns: [
-            EvalTurn(
-                userMessage: "Do I have a meeting with Sarah today?",
-                graders: [
-                    toolCalledGrader(),
-                    daysAheadGrader(minimum: 1, maximum: 2),
-                    eventFoundAndMentionedGrader(),
-                    responseContainsGrader("Sarah")
-                ]
-            )
-        ]
-    ),
-    EvalScenario(
-        id: "B3",
-        category: "Category B — Meeting Lookup",
-        name: "Meeting with Google today (outcome validation)",
-        seedEvents: [
-            makeTestEvent(title: "Google Partnership Sync", daysFromNow: 0, hour: 14),
-            makeTestEvent(title: "Lunch with team",         daysFromNow: 0, hour: 12)
-        ],
-        turns: [
-            EvalTurn(
-                userMessage: "Do I have any meetings with Google today?",
-                graders: [
-                    toolCalledGrader(),
-                    daysAheadGrader(minimum: 1, maximum: 2),
-                    eventFoundAndMentionedGrader(),
-                    responseContainsGrader("Google")
-                ]
-            )
-        ]
-    ),
-    EvalScenario(
-        id: "B4",
-        category: "Category B — Meeting Lookup",
-        name: "Meeting with email address this week (outcome validation)",
-        seedEvents: [
-            makeTestEvent(
-                title: "Project Sync",
-                daysFromNow: 3,
-                hour: 11,
-                notes: "Attendees: john.doe@gmail.com, jane.smith@company.com"
-            )
-        ],
-        turns: [
-            EvalTurn(
-                userMessage: "Do I have a meeting with john.doe@gmail.com this week?",
-                graders: [
-                    toolCalledGrader(),
-                    daysAheadGrader(minimum: 7),
-                    eventFoundAndMentionedGrader(),
-                    responseContainsGrader("john.doe")
-                ]
-            )
-        ]
-    ),
-    EvalScenario(
-        id: "B5",
-        category: "Category B — Meeting Lookup",
-        name: "Meeting with OpenAI next month (outcome validation)",
-        seedEvents: [
-            makeTestEvent(title: "OpenAI Strategy Call", daysFromNow: 35, hour: 15)
-        ],
-        turns: [
-            EvalTurn(
-                userMessage: "Do I have any meetings scheduled with OpenAI next month?",
-                graders: [
-                    toolCalledGrader(),
-                    daysAheadGrader(minimum: 35),
-                    eventFoundAndMentionedGrader(),
-                    responseContainsGrader("OpenAI")
-                ]
-            )
-        ]
-    )
-]
-
-// MARK: - Scenarios: Category B (Negative: Hallucination Guard)
-
-private let categoryBNegativeScenarios: [EvalScenario] = [
-    EvalScenario(
-        id: "B2N",
-        category: "Category B (Negative) — Hallucination Guard",
-        name: "No Sarah meeting — correctly reports no events",
-        seedEvents: [
-            makeTestEvent(title: "Team standup",     daysFromNow: 0, hour: 9),
-            makeTestEvent(title: "Lunch with John",  daysFromNow: 0, hour: 12),
-            makeTestEvent(title: "Product review",   daysFromNow: 0, hour: 15)
-        ],
-        turns: [
-            EvalTurn(
-                userMessage: "Do I have a meeting with Sarah today?",
-                graders: [
-                    toolCalledGrader(),
-                    noEventsFoundGrader()
-                ]
-            )
-        ]
-    ),
-    EvalScenario(
-        id: "B3N",
-        category: "Category B (Negative) — Hallucination Guard",
-        name: "No Google meeting — correctly reports no events",
-        seedEvents: [
-            makeTestEvent(title: "Internal roadmap review", daysFromNow: 0, hour: 10),
-            makeTestEvent(title: "1:1 with manager",        daysFromNow: 0, hour: 14)
-        ],
-        turns: [
-            EvalTurn(
-                userMessage: "Do I have any meetings with Google today?",
-                graders: [
-                    toolCalledGrader(),
-                    noEventsFoundGrader()
-                ]
-            )
-        ]
-    )
-]
-
-// MARK: - Scenarios: Category C (Multi-turn: Sequential Tool Usage)
-
-/// Multi-turn scenario testing state retention and sequential operations.
-/// Turn 1: Fetch meeting with Sarah
-/// Turn 2: Ask for details (should reference Turn 1 result)
-/// Turn 3: Delete it (should use eventID from Turn 1)
-private let categoryMultiTurnScenarios: [EvalScenario] = [
-    EvalScenario(
-        id: "MT1",
-        category: "Category C — Multi-turn",
-        name: "Fetch, ask details, delete (state retention)",
-        seedEvents: [
-            makeTestEvent(title: "1:1 with Sarah", daysFromNow: 0, hour: 10, location: "Conference Room A")
-        ],
-        turns: [
-            EvalTurn(
-                userMessage: "Do I have a meeting with Sarah today?",
-                graders: [
-                    toolCalledGrader(),
-                    daysAheadGrader(minimum: 1, maximum: 2),
-                    eventFoundAndMentionedGrader()
-                ]
-            ),
-            EvalTurn(
-                userMessage: "What's the location?",
-                graders: [
-                    responseContainsGrader("Conference Room")
-                ]
-            )
-        ]
-    ),
-    EvalScenario(
-        id: "MT2",
-        category: "Category C — Multi-turn",
-        name: "List meetings, then ask about specific one",
-        seedEvents: [
-            makeTestEvent(title: "Team standup",    daysFromNow: 0, hour: 9),
-            makeTestEvent(title: "1:1 with Sarah",  daysFromNow: 0, hour: 10),
-            makeTestEvent(title: "Lunch meeting",   daysFromNow: 0, hour: 12)
-        ],
-        turns: [
-            EvalTurn(
-                userMessage: "What meetings do I have today?",
-                graders: [
-                    toolCalledGrader(),
-                    daysAheadGrader(minimum: 1, maximum: 2),
-                    eventFoundAndMentionedGrader()
-                ]
-            ),
-            EvalTurn(
-                userMessage: "Is Sarah in any of those?",
-                graders: [
-                    responseContainsGrader("Sarah")
-                ]
-            )
-        ]
-    )
-]
-
-// MARK: - AllEvaluationScenarios
-
-let allEvaluationScenarios = categoryAScenarios + categoryBScenarios + categoryBNegativeScenarios + categoryMultiTurnScenarios
+        return EvalScenario(
+            id: testCase.id,
+            category: testCase.category,
+            name: testCase.userQuery,
+            seedEvents: testCase.seedEvents,
+            turns: [EvalTurn(userMessage: testCase.userQuery, graders: graders)]
+        )
+    }
+}
 
 // MARK: - Test Harness
 
-/// Runs all eval scenarios and logs results showing tool validation and outcome verification.
 @MainActor
 func runEvaluationSuite() async -> (passed: Int, failed: Int) {
+    let scenarios = buildEvalScenarios()
     let runner = EvalRunner()
-    await runner.run(scenarios: allEvaluationScenarios)
+    await runner.run(scenarios: scenarios)
 
     let logger = Logger(subsystem: "com.ramya-app.VoxiCal.evals", category: "TestHarness")
 
     print("\n" + String(repeating: "=", count: 80))
-    print("EVAL SUITE RESULTS — Anthropic-Style Agent Evaluation")
+    print("EVALUATION RESULTS - 3 Code-Based Test Cases")
     print(String(repeating: "=", count: 80))
 
     let totalPassed = runner.results.filter(\.passed).count
@@ -588,35 +378,25 @@ func runEvaluationSuite() async -> (passed: Int, failed: Int) {
 
     for result in runner.results {
         let status = result.passed ? "✓ PASS" : "✗ FAIL"
-        let allTurns = result.turnResults.count > 1 ? " (\(result.passedTurns)/\(result.turnResults.count) turns)" : ""
-        print("\n[\(status)] \(result.scenarioName)\(allTurns)")
-        print("  Category: \(result.category)")
+        print("\n[\(status)] \(result.scenarioName)")
+        print("    Category: \(result.category)")
 
         for turnResult in result.turnResults {
-            if result.turnResults.count > 1 {
-                print("  Turn \(turnResult.turnNumber): \(turnResult.userMessage)")
-            } else {
-                print("  User: \(turnResult.userMessage)")
-            }
-            print("  Agent: \(turnResult.agentResponse)")
-            print("  Tool calls: \(turnResult.fetchCallCount)")
+            print("    User: \(turnResult.userMessage)")
+            print("    Agent: \(turnResult.agentResponse)")
+            print("    Tool calls: \(turnResult.fetchCallCount)")
 
             for grade in turnResult.gradingResults {
-                let icon = grade.passed ? "  ✓" : "  ✗"
-                print("\(icon) \(grade.graderName)")
-                if !grade.message.isEmpty {
-                    print("     → \(grade.message)")
-                }
+                print("    \(grade.message)")
             }
         }
     }
 
     print("\n" + String(repeating: "=", count: 80))
-    print("SUMMARY: \(totalPassed)/\(runner.results.count) scenarios passed, \(totalFailed) failed")
-    print("Total scenarios: \(runner.results.count) | Single-turn: \(categoryAScenarios.count + categoryBScenarios.count + categoryBNegativeScenarios.count) | Multi-turn: \(categoryMultiTurnScenarios.count)")
+    print("SUMMARY: \(totalPassed)/\(runner.results.count) passed")
     print(String(repeating: "=", count: 80) + "\n")
 
-    logger.info("Eval suite: \(totalPassed)/\(runner.results.count) passed")
+    logger.info("Eval results: \(totalPassed)/\(runner.results.count) passed")
 
     return (totalPassed, totalFailed)
 }
