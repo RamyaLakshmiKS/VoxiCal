@@ -220,4 +220,8 @@ __marimo__/
 # Plan
 plan/
 
+# Xcode
+*.xcworkspace
+*.xcodeproj
+
 .DS_Store
