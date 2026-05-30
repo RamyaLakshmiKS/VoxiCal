@@ -204,6 +204,30 @@ func responseDoesNotContainGrader(_ keyword: String) -> Grader {
     }
 }
 
+/// Passes when the agent's response signals that no matching events were found
+/// rather than inventing a meeting. Catches hallucination on empty or mismatched results.
+func noEventsFoundGrader() -> Grader {
+    { ctx in
+        let indicators = [
+            "no meeting", "no event", "no appointment",
+            "nothing scheduled", "nothing on your calendar",
+            "don't see", "doesn't appear", "doesn't show",
+            "couldn't find", "not scheduled", "not found",
+            "not have", "don't have any"
+        ]
+        let passed = indicators.contains {
+            ctx.agentResponse.localizedCaseInsensitiveContains($0)
+        }
+        return GradeResult(
+            graderName: "No events found (hallucination check)",
+            passed: passed,
+            message: passed
+                ? "Agent correctly reported no matching events"
+                : "Agent may have hallucinated — response does not indicate 'no events found'. Got: \"\(ctx.agentResponse)\""
+        )
+    }
+}
+
 // MARK: - EvalRunner
 
 @MainActor
@@ -348,12 +372,56 @@ private let categoryBScenarios: [EvalScenario] = [
     )
 ]
 
+// MARK: - Scenarios: Category B (Negative) — Hallucination Guard
+
+// These scenarios seed events that do NOT match the user's query.
+// The agent must call the tool, read the real results, and report "no match" —
+// not invent a meeting. A passing eval here means hallucination is suppressed.
+
+private let categoryBNegativeScenarios: [EvalScenario] = [
+
+    // B2N: Calendar has events today, but NONE with Sarah.
+    // Agent must not fabricate a Sarah meeting.
+    EvalScenario(
+        id: "B2N",
+        category: "Category B (Negative) — Hallucination Guard",
+        name: "No Sarah meeting — other events exist today",
+        userMessage: "Do I have a meeting with Sarah today?",
+        seedEvents: [
+            makeTestEvent(title: "Team standup",     daysFromNow: 0, hour: 9),
+            makeTestEvent(title: "Lunch with John",  daysFromNow: 0, hour: 12),
+            makeTestEvent(title: "Product review",   daysFromNow: 0, hour: 15)
+        ],
+        graders: [
+            toolCalledGrader(),
+            noEventsFoundGrader()
+        ]
+    ),
+
+    // B3N: Calendar has events today, but NONE with Google.
+    // Agent must not fabricate a Google meeting.
+    EvalScenario(
+        id: "B3N",
+        category: "Category B (Negative) — Hallucination Guard",
+        name: "No Google meeting — other events exist today",
+        userMessage: "Do I have any meetings with Google today?",
+        seedEvents: [
+            makeTestEvent(title: "Internal roadmap review", daysFromNow: 0, hour: 10),
+            makeTestEvent(title: "1:1 with manager",        daysFromNow: 0, hour: 14)
+        ],
+        graders: [
+            toolCalledGrader(),
+            noEventsFoundGrader()
+        ]
+    )
+]
+
 // MARK: - EvalView
 
 struct EvalView: View {
     @State private var runner = EvalRunner()
 
-    private let allScenarios = categoryAScenarios + categoryBScenarios
+    private let allScenarios = categoryAScenarios + categoryBScenarios + categoryBNegativeScenarios
 
     var body: some View {
         Group {
