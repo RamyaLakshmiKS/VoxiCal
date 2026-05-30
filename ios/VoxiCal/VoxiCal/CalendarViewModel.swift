@@ -25,7 +25,6 @@ class CalendarViewModel {
     // MARK: - Services (shared with tools)
 
     let calendarService = CalendarService()
-    let cacheService    = ResponseCacheService()
     let speechService   = SpeechService()
     let ttsService      = TTSService()
 
@@ -82,9 +81,8 @@ class CalendarViewModel {
 
     private func buildSession() {
         let tools: [any Tool] = [
-            FetchCalendarEventsTool(calendarService: calendarService, cacheService: cacheService),
-            DeleteCalendarEventTool(calendarService: calendarService),
-            SearchCacheTool(cacheService: cacheService)
+            FetchCalendarEventsTool(calendarService: calendarService),
+            DeleteCalendarEventTool(calendarService: calendarService)
         ]
 
         // Instructions are a static developer string — never interpolate user input here.
@@ -95,13 +93,11 @@ class CalendarViewModel {
                 You are VoxiCal, a calm and concise iOS calendar assistant. \
                 You help users understand and manage their schedule using only the tools provided.
 
-                Tool usage order:
-                1. Always call searchPastResponses first to check for a recent cached answer.
-                2. Only call fetchCalendarEvents if the cache has no useful or fresh result.
-                3. To delete an event: ALWAYS call fetchCalendarEvents first — never rely on a \
-                   cached eventID — to get the current event list. Identify the event, name it in \
-                   your reply for the user to confirm, then call deleteCalendarEvent with the exact \
-                   eventID from that fresh fetch result.
+                Tool usage:
+                - Call fetchCalendarEvents to retrieve the user's schedule.
+                - To delete an event: ALWAYS call fetchCalendarEvents first to get the current \
+                  event list. Identify the event, name it in your reply for the user to confirm, \
+                  then call deleteCalendarEvent with the exact eventID from that fetch result.
 
                 daysAhead values for fetchCalendarEvents (today is day 0, inclusive):
                 - 1 = today only
@@ -158,10 +154,6 @@ class CalendarViewModel {
             let responseText = response.content
 
             messages.append(ChatMessage(role: .assistant, text: responseText))
-
-            // Persist to cache so SearchCacheTool can serve repeat queries
-            // without going back to EventKit or growing the live transcript.
-            await cacheService.store(query: trimmed, response: responseText)
 
             // Speak the response — audio session handoff handled inside TTSService
             ttsService.speak(responseText)

@@ -9,7 +9,7 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
     typealias Output = String
 
     nonisolated let name = "fetchCalendarEvents"
-    let description = "Fetches upcoming calendar events. Call this when the user asks about their schedule, meetings, or appointments. Always call searchPastResponses first."
+    let description = "Fetches upcoming calendar events. Call this when the user asks about their schedule, meetings, or appointments."
 
     @Generable
     struct Arguments {
@@ -21,7 +21,6 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
     }
 
     let calendarService: CalendarService
-    let cacheService: ResponseCacheService
 
     func call(arguments: Arguments) async throws -> String {
         let events = try await calendarService.fetchEvents(
@@ -29,20 +28,10 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
             titleFilter: arguments.titleFilter
         )
 
-        let result: String
         if events.isEmpty {
-            result = "No events found for the next \(arguments.daysAhead) day(s)."
-        } else {
-            result = events.map { "\($0.description) [eventID:\($0.id)]" }.joined(separator: "\n")
+            return "No events found for the next \(arguments.daysAhead) day(s)."
         }
-
-        await cacheService.store(
-            query: "fetch daysAhead:\(arguments.daysAhead) filter:\(arguments.titleFilter ?? "none")",
-            response: result,
-            eventIDs: events.map(\.id)
-        )
-
-        return result
+        return events.map { "\($0.description) [eventID:\($0.id)]" }.joined(separator: "\n")
     }
 }
 
@@ -70,43 +59,5 @@ struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
     func call(arguments: Arguments) async throws -> String {
         try await calendarService.deleteEvent(id: arguments.eventID)
         return "Deleted '\(arguments.eventTitle)' from your calendar."
-    }
-}
-
-// MARK: - SearchCacheTool
-
-/// Lets the LLM search previously cached query/response pairs before hitting EventKit.
-/// This is the primary context-window management mechanism — by recalling past responses
-/// from disk, the LLM avoids re-fetching the same calendar data repeatedly, keeping
-/// the live session transcript lean and within the 4,096-token limit.
-struct SearchCacheTool: Tool, @unchecked Sendable {
-    typealias Output = String
-
-    nonisolated let name = "searchPastResponses"
-    let description = "Searches cached responses for calendar information. Call this FIRST before fetchCalendarEvents. If a recent result is found, use it and skip fetching. Only fetch if cache returns nothing."
-
-    @Generable
-    struct Arguments {
-        @Guide(description: "Key terms from the user's query to search the cache. For example 'today meetings' or 'this week schedule'.")
-        var query: String
-    }
-
-    let cacheService: ResponseCacheService
-
-    func call(arguments: Arguments) async throws -> String {
-        let matches = await cacheService.search(query: arguments.query)
-
-        guard !matches.isEmpty else {
-            return "No cached responses found. Proceed to call fetchCalendarEvents."
-        }
-
-        let formatted = matches
-            .map { entry in
-                let age = RelativeDateTimeFormatter().localizedString(for: entry.timestamp, relativeTo: Date())
-                return "[\(age)]\n\(entry.response)"
-            }
-            .joined(separator: "\n\n---\n\n")
-
-        return formatted
     }
 }
