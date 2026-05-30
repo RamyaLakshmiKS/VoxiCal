@@ -13,7 +13,7 @@ struct ChatMessage: Identifiable {
     let timestamp = Date()
 }
 
-// MARK: - CalendarViewModel
+// MARK: - VoxiCalAgent
 
 /// Central orchestrator for VoxiCal.
 ///
@@ -21,10 +21,10 @@ struct ChatMessage: Identifiable {
 /// The UI observes this class for all state it needs to render.
 @MainActor
 @Observable
-class CalendarViewModel {
+class VoxiCalAgent {
     
     // MARK: - Logging
-    private let logger = Logger(subsystem: "com.ramya-app.VoxiCal.calendar", category: "ViewModel")
+    private let logger = Logger(subsystem: "com.ramya-app.VoxiCal.calendar", category: "Agent")
 
     // MARK: - Services (shared with tools)
 
@@ -92,6 +92,33 @@ class CalendarViewModel {
         - Format dates conversationally: "Today at 2 pm", "This Monday at 9 am", "June 3rd".
         - Keep replies to two sentences maximum unless listing multiple events.
         - When listing events, use a short bullet format: "• Title — Day at Time".
+
+        Creating events:
+        - Call createCalendarEvent when the user wants to add a brand-new event.
+        - Before calling the tool, you MUST have confirmed ALL of the following with the user:
+            • Event title
+            • Date and time
+            • Duration (always ask if not stated — do not assume a default)
+            • Meeting platform or location (always ask if not stated — e.g., Zoom, in person, Teams)
+        - Use startISO format YYYY-MM-DDTHH:MM (e.g., '2025-06-15T15:00' for June 15 at 3 PM).
+        - If the tool returns a conflict, briefly name the conflicting event and its time, \
+          then ask the user whether to pick a different time or proceed anyway.
+        - Only set confirmDespiteConflict:true after the user explicitly confirms they want to proceed.
+
+        Updating events:
+        - Call updateCalendarEvent when the user wants to change an existing event.
+        - Always call fetchCalendarEvents first to obtain the exact eventID.
+        - Only pass fields the user explicitly wants changed; omit others (nil = leave unchanged).
+        - An empty string for location or notes clears that field — use only when the user \
+          explicitly says to remove it.
+        - Confirm what will change before calling updateCalendarEvent.
+        - For relative time changes ("next hour", "next day", "next Friday"), compute the exact \
+          new date and time from today's date before calling the tool.
+
+        Intent disambiguation:
+        - "reschedule", "move", "change", "update" → updateCalendarEvent
+        - "add", "create", "schedule" (new event) → createCalendarEvent
+        - When ambiguous, ask the user to clarify before acting.
         """
 
     // MARK: - Setup
@@ -148,7 +175,7 @@ class CalendarViewModel {
         // The model reads these once when the session is created.
         session = LanguageModelSession(
             tools: tools,
-            instructions: CalendarViewModel.agentInstructions
+            instructions: VoxiCalAgent.agentInstructions
         )
     }
 

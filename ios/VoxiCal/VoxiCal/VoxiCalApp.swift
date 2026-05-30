@@ -5,7 +5,7 @@ struct VoxiCalApp: App {
 
     // Single source of truth for the entire app.
     // @State here keeps it alive for the full app lifetime — not recreated on re-renders.
-    @State private var viewModel = CalendarViewModel()
+    @State private var viewModel = VoxiCalAgent()
 
     var body: some Scene {
         WindowGroup {

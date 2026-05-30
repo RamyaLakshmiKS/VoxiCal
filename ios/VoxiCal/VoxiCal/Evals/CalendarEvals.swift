@@ -8,6 +8,8 @@ import os.log
 protocol CalendarServiceProtocol: AnyObject {
     func fetchEvents(daysAhead: Int, daysBack: Int, titleFilter: String?) async throws -> [CalendarEvent]
     func deleteEvent(id: String) async throws
+    func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent
+    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent
 }
 
 // MARK: - MockCalendarService
@@ -18,6 +20,10 @@ final class MockCalendarService: CalendarServiceProtocol {
     private(set) var fetchCallCount = 0
     private(set) var lastFetchArgs: (daysAhead: Int, daysBack: Int, titleFilter: String?)?
     private(set) var lastFetchResult: [CalendarEvent] = []
+    private(set) var createCallCount = 0
+    private(set) var updateCallCount = 0
+    private(set) var lastCreatedEvent: CalendarEvent?
+    private(set) var lastUpdatedEvent: CalendarEvent?
 
     func fetchEvents(daysAhead: Int, daysBack: Int, titleFilter: String?) async throws -> [CalendarEvent] {
         fetchCallCount += 1
@@ -44,6 +50,59 @@ final class MockCalendarService: CalendarServiceProtocol {
 
     func deleteEvent(id: String) async throws {
         seedEvents.removeAll { $0.id == id }
+    }
+
+    func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent {
+        createCallCount += 1
+        let event = CalendarEvent(
+            id: UUID().uuidString,
+            title: title,
+            startDate: startDate,
+            endDate: startDate.addingTimeInterval(Double(durationMinutes) * 60),
+            location: location,
+            notes: notes
+        )
+        seedEvents.append(event)
+        lastCreatedEvent = event
+        return event
+    }
+
+    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent {
+        guard let index = seedEvents.firstIndex(where: { $0.id == id }) else {
+            throw CalendarError.eventNotFound(id: id)
+        }
+        updateCallCount += 1
+        let existing = seedEvents[index]
+
+        let newTitle = title ?? existing.title
+
+        let newStart: Date
+        let newEnd: Date
+        if let startDate {
+            let originalDuration = existing.endDate.timeIntervalSince(existing.startDate)
+            let duration = durationMinutes.map { Double($0) * 60 } ?? originalDuration
+            newStart = startDate
+            newEnd = startDate.addingTimeInterval(duration)
+        } else if let durationMinutes {
+            newStart = existing.startDate
+            newEnd = existing.startDate.addingTimeInterval(Double(durationMinutes) * 60)
+        } else {
+            newStart = existing.startDate
+            newEnd = existing.endDate
+        }
+
+        let newLocation: String?
+        if let location { newLocation = location.isEmpty ? nil : location }
+        else { newLocation = existing.location }
+
+        let newNotes: String?
+        if let notes { newNotes = notes.isEmpty ? nil : notes }
+        else { newNotes = existing.notes }
+
+        let updated = CalendarEvent(id: id, title: newTitle, startDate: newStart, endDate: newEnd, location: newLocation, notes: newNotes)
+        seedEvents[index] = updated
+        lastUpdatedEvent = updated
+        return updated
     }
 }
 
@@ -93,6 +152,52 @@ let goldenTestCases: [GoldenTestCase] = [
             makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9),
             makeTestEvent(title: "Lunch with John", daysFromNow: 0, hour: 12)
         ]
+    ),
+
+    // Test 4: Create event (all details provided — agent should call createCalendarEvent)
+    GoldenTestCase(
+        id: "test-create-event",
+        userQuery: "Schedule a team sync tomorrow at 3pm for 30 minutes on Zoom",
+        category: "Create Event",
+        expectedBehavior: "Agent calls createCalendarEvent with the provided details",
+        shouldCallTool: true,
+        seedEvents: []
+    ),
+
+    // Test 5: Create event with conflict (agent detects overlap, reports it without creating)
+    GoldenTestCase(
+        id: "test-create-conflict",
+        userQuery: "Schedule a sync tomorrow at 9am for 30 minutes on Teams",
+        category: "Create Conflict",
+        expectedBehavior: "Agent detects conflict with existing event, mentions it, does not create",
+        shouldCallTool: true,
+        seedEvents: [
+            makeTestEvent(title: "Morning standup", daysFromNow: 1, hour: 9)
+        ]
+    ),
+
+    // Test 6: Update event (agent should fetch first, then call updateCalendarEvent)
+    GoldenTestCase(
+        id: "test-update-event",
+        userQuery: "Move my team standup to 10am",
+        category: "Update Event",
+        expectedBehavior: "Agent calls fetchCalendarEvents then updateCalendarEvent",
+        shouldCallTool: true,
+        seedEvents: [
+            makeTestEvent(title: "Team standup", daysFromNow: 2, hour: 9)
+        ]
+    ),
+
+    // Test 7: Reschedule (update) vs create — agent should use update, not create
+    GoldenTestCase(
+        id: "test-create-vs-update",
+        userQuery: "Reschedule my 1:1 with Sarah to 2pm",
+        category: "Create vs Update",
+        expectedBehavior: "Agent uses updateCalendarEvent (not create) to reschedule the existing event",
+        shouldCallTool: true,
+        seedEvents: [
+            makeTestEvent(title: "1:1 with Sarah", daysFromNow: 3, hour: 10)
+        ]
     )
 ]
 
@@ -126,6 +231,9 @@ struct EvalContext {
     let agentResponse: String
     let fetchCallCount: Int
     let lastFetchResult: [CalendarEvent]
+    let createCallCount: Int
+    let updateCallCount: Int
+    let lastCreatedEvent: CalendarEvent?
 }
 
 struct GradeResult: Identifiable {
@@ -252,6 +360,75 @@ func noEventsFoundGrader() -> Grader {
     }
 }
 
+func createToolCalledGrader() -> Grader {
+    { ctx in
+        let ok = ctx.createCallCount > 0
+        return GradeResult(
+            graderName: "Create tool called",
+            passed: ok,
+            message: ok
+                ? "✓ Called createCalendarEvent \(ctx.createCallCount) time(s)"
+                : "✗ Did not call createCalendarEvent — expected at least 1 call"
+        )
+    }
+}
+
+func updateToolCalledGrader() -> Grader {
+    { ctx in
+        let ok = ctx.updateCallCount > 0
+        return GradeResult(
+            graderName: "Update tool called",
+            passed: ok,
+            message: ok
+                ? "✓ Called updateCalendarEvent \(ctx.updateCallCount) time(s)"
+                : "✗ Did not call updateCalendarEvent — expected at least 1 call"
+        )
+    }
+}
+
+func conflictMentionedGrader() -> Grader {
+    { ctx in
+        let indicators = [
+            "conflict", "overlap", "already have", "already scheduled",
+            "clash", "same time", "existing event", "another event"
+        ]
+        let ok = indicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
+        return GradeResult(
+            graderName: "Conflict mentioned",
+            passed: ok,
+            message: ok
+                ? "✓ Agent mentioned the scheduling conflict"
+                : "✗ Agent did not mention the conflict despite overlap"
+        )
+    }
+}
+
+func noEventCreatedGrader() -> Grader {
+    { ctx in
+        let ok = ctx.createCallCount == 0
+        return GradeResult(
+            graderName: "No event created (conflict case)",
+            passed: ok,
+            message: ok
+                ? "✓ Correctly did not create event when conflict exists"
+                : "✗ Created event despite unresolved conflict"
+        )
+    }
+}
+
+func updateNotCreateGrader() -> Grader {
+    { ctx in
+        let ok = ctx.updateCallCount > 0 && ctx.createCallCount == 0
+        return GradeResult(
+            graderName: "Update used instead of create",
+            passed: ok,
+            message: ok
+                ? "✓ Agent used updateCalendarEvent (not create) for rescheduling"
+                : "✗ Agent used createCalendarEvent instead of updateCalendarEvent (update:\(ctx.updateCallCount), create:\(ctx.createCallCount))"
+        )
+    }
+}
+
 // MARK: - EvalRunner
 
 @MainActor
@@ -282,12 +459,17 @@ final class EvalRunner {
 
         let tools: [any Tool] = [
             FetchCalendarEventsTool(calendarService: mock),
-            DeleteCalendarEventTool(calendarService: mock)
+            DeleteCalendarEventTool(calendarService: mock),
+            CreateCalendarEventTool(calendarService: mock),
+            UpdateCalendarEventTool(calendarService: mock)
         ]
+
+        let today = DateFormatter.localizedString(from: Date(), dateStyle: .full, timeStyle: .none)
+        let instructions = "Today is \(today).\n\n" + VoxiCalAgent.agentInstructions
 
         let session = LanguageModelSession(
             tools: tools,
-            instructions: CalendarViewModel.agentInstructions
+            instructions: instructions
         )
 
         var turnResults: [TurnResult] = []
@@ -305,7 +487,10 @@ final class EvalRunner {
                 userMessage: turn.userMessage,
                 agentResponse: agentResponse,
                 fetchCallCount: mock.fetchCallCount,
-                lastFetchResult: mock.lastFetchResult
+                lastFetchResult: mock.lastFetchResult,
+                createCallCount: mock.createCallCount,
+                updateCallCount: mock.updateCallCount,
+                lastCreatedEvent: mock.lastCreatedEvent
             )
 
             var gradingResults: [GradeResult] = []
@@ -336,17 +521,40 @@ func buildEvalScenarios() -> [EvalScenario] {
     return goldenTestCases.map { testCase in
         var graders: [Grader] = []
 
-        if testCase.shouldCallTool {
-            graders.append(toolCalledGrader())
-            // If events are in seed, expect them to be mentioned
-            if !testCase.seedEvents.isEmpty {
-                graders.append(eventFoundAndMentionedGrader())
-            } else {
-                // Empty seed = expect "no events" response
-                graders.append(noEventsFoundGrader())
-            }
-        } else {
+        switch testCase.id {
+        case "test-greeting":
             graders.append(noToolCallGrader())
+
+        case "test-meeting-lookup":
+            graders.append(toolCalledGrader())
+            graders.append(eventFoundAndMentionedGrader())
+
+        case "test-no-hallucination":
+            graders.append(toolCalledGrader())
+            graders.append(noEventsFoundGrader())
+
+        case "test-create-event":
+            graders.append(createToolCalledGrader())
+
+        case "test-create-conflict":
+            graders.append(toolCalledGrader())
+            graders.append(conflictMentionedGrader())
+            graders.append(noEventCreatedGrader())
+
+        case "test-update-event":
+            graders.append(toolCalledGrader())
+            graders.append(updateToolCalledGrader())
+
+        case "test-create-vs-update":
+            graders.append(toolCalledGrader())
+            graders.append(updateNotCreateGrader())
+
+        default:
+            if testCase.shouldCallTool {
+                graders.append(toolCalledGrader())
+            } else {
+                graders.append(noToolCallGrader())
+            }
         }
 
         return EvalScenario(
