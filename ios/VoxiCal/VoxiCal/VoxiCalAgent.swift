@@ -67,10 +67,17 @@ class VoxiCalAgent {
         IMPORTANT: Always fetch with a SINGLE call covering the full date range — \
         never call this tool multiple times to iterate through individual days.
 
-        Event IDs: When fetchCalendarEvents returns events, each line ends with \
-        [eventID:XXX]. Use this exact string when calling deleteCalendarEvent. \
-        Never guess or construct an eventID. Never include eventID values in your \
-        replies to the user.
+        Event IDs: Each event line ends with [eventID:XXX]. Use the exact full string \
+        (including any colons) when calling update or delete tools. \
+        NEVER include eventID values in your replies to the user — no exceptions. \
+        NEVER use an eventID from a previous turn's memory — always call \
+        fetchCalendarEvents in the same turn before update or delete.
+
+        Success reporting: Only tell the user a calendar change was made if the \
+        corresponding tool (createCalendarEvent, updateCalendarEvent, or \
+        deleteCalendarEvent) returned a success message. Fetching events is NOT \
+        updating or creating them. Never report "updated" or "scheduled" unless \
+        the action tool explicitly confirmed it.
 
         Accuracy — follow these rules without exception:
         - ONLY report events that appear verbatim in the fetchCalendarEvents tool response.
@@ -94,11 +101,16 @@ class VoxiCalAgent {
 
         Creating events:
         - Call createCalendarEvent when the user wants to add a brand-new event.
-        - Before calling the tool, confirm ALL of the following with the user:
+        - Before calling the tool, the user's message MUST explicitly state all four:
             • Event title
-            • Date and time
-            • Duration (always ask if not stated — do not assume a default)
-            • Meeting platform or location (always ask if not stated — e.g., Zoom, in person, Teams)
+            • Date and time (use the exact ISO date from the prefix — "tomorrow" = \
+              the tomorrow date above, never a date from conversation context)
+            • Duration in minutes — if absent, respond ONLY with a question asking for \
+              it. Do NOT call any tool. NEVER assume 60 minutes or any default.
+            • Platform or location — if absent, respond ONLY with a question asking for \
+              it. Do NOT call any tool.
+          A response that calls createCalendarEvent AND asks for missing details is \
+          WRONG. Ask first. Wait for the answer. Then create.
         - Use startISO format YYYY-MM-DDTHH:MM. Compute from the ISO dates in the prefix above.
         - The tool runs conflict detection automatically. If it reports a conflict:
             1. Name the conflicting event and its time clearly.
@@ -111,8 +123,9 @@ class VoxiCalAgent {
 
         Updating events:
         - Call updateCalendarEvent when the user wants to change an existing event.
-        - Always call fetchCalendarEvents first to obtain the exact eventID. \
-          Use the startISO and endISO values already computed in the date prefix above.
+        - You MUST call fetchCalendarEvents in the same turn first to get the current \
+          eventID. Never use an eventID from earlier in the conversation — it may be stale.
+        - Use the startISO and endISO values already computed in the date prefix above.
         - Only pass fields the user explicitly wants changed; omit others (nil = leave unchanged).
         - An empty string for location or notes clears that field — use only when the user \
           explicitly says to remove it.
@@ -183,8 +196,10 @@ class VoxiCalAgent {
             Today is \(verbose). \
             YYYY-MM-DD dates: today=\(isoToday), tomorrow=\(isoTomorrow), \
             14-days-from-today=\(iso14DaysLater). \
+            When the user says "tomorrow", ALWAYS use '\(isoTomorrow)' — \
+            never use a date mentioned elsewhere in the conversation. \
             When fetching to find an event to update or reschedule: \
-            use startISO='\(isoToday)' (today) and endISO='\(iso14DaysLater)' (14 days out). \
+            use startISO='\(isoToday)' and endISO='\(iso14DaysLater)'. \
             Do NOT use \(iso14DaysLater) as startISO.
             """
         return prefix + "\n\n" + agentInstructions

@@ -47,7 +47,7 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
             """)
         var endISO: String
 
-        @Guide(description: "Optional keyword to filter events by title. For example 'standup' or 'doctor'. Omit to return all events.")
+        @Guide(description: "Specific name or keyword to filter by — e.g. 'Karthik', 'standup', 'doctor'. Omit for broad queries like 'what's on my schedule' or 'any meetings'. NEVER use generic words like 'meeting' or 'appointment' — they miss events not titled that way.")
         var titleFilter: String?
     }
 
@@ -158,8 +158,8 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
         @Guide(description: "Start date and time in YYYY-MM-DDTHH:MM format using local time. Compute from today's ISO date. Example: if today is 2026-05-31, then tomorrow 9am = '2026-06-01T09:00'.")
         var startISO: String
 
-        @Guide(description: "Duration of the event in minutes, as confirmed by the user. Always ask the user if not specified.")
-        var durationMinutes: Int
+        @Guide(description: "Duration in minutes, as explicitly stated by the user. Omit (nil) if the user has not specified a duration — the tool will prompt you to ask first. NEVER assume 60 or any default.")
+        var durationMinutes: Int?
 
         @Guide(description: "Meeting platform or room (e.g., 'Zoom', 'Google Meet', 'Teams', 'Conference Room A', 'In person'). Always ask if not provided. Omit only if user explicitly says there is none.")
         var location: String?
@@ -172,7 +172,12 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
     let calendarService: any CalendarServiceProtocol
 
     func call(arguments: Arguments) async throws -> String {
-        let toolMsg = "[TOOL: createCalendarEvent] title=\(arguments.title), start=\(arguments.startISO), duration=\(arguments.durationMinutes)min"
+        guard let durationMinutes = arguments.durationMinutes else {
+            logger.info("[TOOL: createCalendarEvent] blocked — duration missing")
+            return "Duration not specified. Ask the user how long the event should be (in minutes) before calling this tool again."
+        }
+
+        let toolMsg = "[TOOL: createCalendarEvent] title=\(arguments.title), start=\(arguments.startISO), duration=\(durationMinutes)min"
         logger.info("\(toolMsg, privacy: .public)")
 
         guard let startDate = parseISO(arguments.startISO) else {
@@ -181,7 +186,7 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
             return "Invalid date format '\(arguments.startISO)'. Use YYYY-MM-DDTHH:MM (e.g., '2025-06-15T15:00')."
         }
 
-        let endDate = startDate.addingTimeInterval(Double(arguments.durationMinutes) * 60)
+        let endDate = startDate.addingTimeInterval(Double(durationMinutes) * 60)
 
         // Always run conflict detection.
         let overlapping = try await calendarService.fetchEvents(start: startDate, end: endDate, titleFilter: nil)
@@ -206,7 +211,7 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
         let created = try await calendarService.createEvent(
             title: arguments.title,
             startDate: startDate,
-            durationMinutes: arguments.durationMinutes,
+            durationMinutes: durationMinutes,
             location: arguments.location,
             notes: arguments.notes
         )

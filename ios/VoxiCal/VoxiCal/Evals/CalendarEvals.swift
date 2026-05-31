@@ -191,6 +191,29 @@ let goldenTestCases: [GoldenTestCase] = [
         seedEvents: [
             makeTestEvent(title: "1:1 with Sarah", daysFromNow: 3, hour: 10)
         ]
+    ),
+
+    // Test 8: Create event with missing details — agent must ask before creating
+    GoldenTestCase(
+        id: "test-create-missing-details",
+        userQuery: "I want to schedule a meeting with Karthik",
+        category: "Create Missing Details",
+        expectedBehavior: "Agent asks for date, time, duration, and/or platform before calling createCalendarEvent",
+        shouldCallTool: false,
+        seedEvents: []
+    ),
+
+    // Test 9: No eventID exposed in response
+    GoldenTestCase(
+        id: "test-no-event-id-in-response",
+        userQuery: "What's on my schedule today?",
+        category: "No EventID Leak",
+        expectedBehavior: "Agent returns event details without exposing raw eventID values to the user",
+        shouldCallTool: true,
+        seedEvents: [
+            makeTestEvent(title: "Standup", daysFromNow: 0, hour: 9),
+            makeTestEvent(title: "1:1 with Sarah", daysFromNow: 0, hour: 14)
+        ]
     )
 ]
 
@@ -420,6 +443,52 @@ func noEventCreatedGrader() -> Grader {
     }
 }
 
+func noCreateBeforeConfirmGrader() -> Grader {
+    { ctx in
+        let ok = ctx.createCallCount == 0
+        return GradeResult(
+            graderName: "No create before confirmation",
+            passed: ok,
+            message: ok
+                ? "✓ Did not create event without confirming missing details"
+                : "✗ Created event without confirming duration/location"
+        )
+    }
+}
+
+func askedForMissingDetailsGrader() -> Grader {
+    { ctx in
+        let indicators = [
+            "duration", "how long", "how many minutes",
+            "location", "platform", "where will", "where would",
+            "zoom", "teams", "in person", "video call", "phone call",
+            "when", "what date", "what time", "what day"
+        ]
+        let ok = indicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
+        return GradeResult(
+            graderName: "Asked for missing details",
+            passed: ok,
+            message: ok
+                ? "✓ Agent asked for missing event details"
+                : "✗ Agent did not ask for date/duration/location"
+        )
+    }
+}
+
+func noEventIDInResponseGrader() -> Grader {
+    { ctx in
+        let exposed = ctx.agentResponse.localizedCaseInsensitiveContains("eventID") ||
+                      ctx.agentResponse.contains("[eventID:")
+        return GradeResult(
+            graderName: "No eventID exposed to user",
+            passed: !exposed,
+            message: !exposed
+                ? "✓ Agent did not expose eventIDs in response"
+                : "✗ Agent included eventID values in user-facing response"
+        )
+    }
+}
+
 func updateNotCreateGrader() -> Grader {
     { ctx in
         let ok = ctx.updateCallCount > 0 && ctx.createCallCount == 0
@@ -552,6 +621,14 @@ func buildEvalScenarios() -> [EvalScenario] {
         case "test-create-vs-update":
             graders.append(toolCalledGrader())
             graders.append(updateNotCreateGrader())
+
+        case "test-create-missing-details":
+            graders.append(noCreateBeforeConfirmGrader())
+            graders.append(askedForMissingDetailsGrader())
+
+        case "test-no-event-id-in-response":
+            graders.append(toolCalledGrader())
+            graders.append(noEventIDInResponseGrader())
 
         default:
             if testCase.shouldCallTool {
