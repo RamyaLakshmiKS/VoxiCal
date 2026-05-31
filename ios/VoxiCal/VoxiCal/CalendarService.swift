@@ -41,6 +41,8 @@ enum CalendarError: LocalizedError {
     case accessDenied
     case writeOnlyAccess
     case eventNotFound(id: String)
+    case createFailed(reason: String)
+    case updateFailed(reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -50,6 +52,10 @@ enum CalendarError: LocalizedError {
             return "VoxiCal needs full calendar access, not just write access. Please update in Settings."
         case .eventNotFound(let id):
             return "Event not found (ID: \(id)). It may have already been deleted."
+        case .createFailed(let reason):
+            return "Failed to create event: \(reason)"
+        case .updateFailed(let reason):
+            return "Failed to update event: \(reason)"
         }
     }
 }
@@ -128,6 +134,76 @@ class CalendarService {
             throw CalendarError.eventNotFound(id: id)
         }
         try store.remove(event, span: .thisEvent, commit: true)
+    }
+
+    // MARK: - Create
+
+    func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent {
+        guard hasAccess || EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+            throw CalendarError.accessDenied
+        }
+
+        let ekEvent = EKEvent(eventStore: store)
+        ekEvent.title = title
+        ekEvent.startDate = startDate
+        ekEvent.endDate = startDate.addingTimeInterval(Double(durationMinutes) * 60)
+        ekEvent.location = location
+        ekEvent.notes = notes
+        ekEvent.calendar = store.defaultCalendarForNewEvents
+
+        do {
+            try store.save(ekEvent, span: .thisEvent, commit: true)
+        } catch {
+            throw CalendarError.createFailed(reason: error.localizedDescription)
+        }
+
+        return CalendarEvent(
+            id: ekEvent.eventIdentifier ?? UUID().uuidString,
+            title: title,
+            startDate: startDate,
+            endDate: ekEvent.endDate,
+            location: location,
+            notes: notes
+        )
+    }
+
+    // MARK: - Update
+
+    /// Updates fields of an existing event. Pass nil to leave a field unchanged.
+    /// Pass an empty string for location or notes to clear those fields.
+    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent {
+        guard let event = store.event(withIdentifier: id) else {
+            throw CalendarError.eventNotFound(id: id)
+        }
+
+        if let title { event.title = title }
+
+        if let startDate {
+            let originalDuration = event.endDate.timeIntervalSince(event.startDate)
+            let duration = durationMinutes.map { Double($0) * 60 } ?? originalDuration
+            event.startDate = startDate
+            event.endDate = startDate.addingTimeInterval(duration)
+        } else if let durationMinutes {
+            event.endDate = event.startDate.addingTimeInterval(Double(durationMinutes) * 60)
+        }
+
+        if let location { event.location = location.isEmpty ? nil : location }
+        if let notes    { event.notes    = notes.isEmpty    ? nil : notes }
+
+        do {
+            try store.save(event, span: .thisEvent, commit: true)
+        } catch {
+            throw CalendarError.updateFailed(reason: error.localizedDescription)
+        }
+
+        return CalendarEvent(
+            id: event.eventIdentifier ?? id,
+            title: event.title ?? "(No title)",
+            startDate: event.startDate,
+            endDate: event.endDate,
+            location: event.location,
+            notes: event.notes
+        )
     }
 }
 

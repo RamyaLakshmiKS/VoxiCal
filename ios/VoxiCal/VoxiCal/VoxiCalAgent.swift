@@ -166,16 +166,21 @@ class VoxiCalAgent {
     private func buildSession() {
         let tools: [any Tool] = [
             FetchCalendarEventsTool(calendarService: calendarService),
-            DeleteCalendarEventTool(calendarService: calendarService)
+            DeleteCalendarEventTool(calendarService: calendarService),
+            CreateCalendarEventTool(calendarService: calendarService),
+            UpdateCalendarEventTool(calendarService: calendarService)
         ]
-        
-        logger.info("Building LanguageModelSession with 2 tools: fetchCalendarEvents, deleteCalendarEvent")
 
-        // Instructions are a static developer string — never interpolate user input here.
-        // The model reads these once when the session is created.
+        logger.info("Building LanguageModelSession with 4 tools: fetchCalendarEvents, deleteCalendarEvent, createCalendarEvent, updateCalendarEvent")
+
+        // Prepend today's date so the LLM can resolve relative references like "tomorrow" or "next Friday".
+        // agentInstructions is a static developer string — never interpolate user input into it.
+        let today = DateFormatter.localizedString(from: Date(), dateStyle: .full, timeStyle: .none)
+        let instructions = "Today is \(today).\n\n" + VoxiCalAgent.agentInstructions
+
         session = LanguageModelSession(
             tools: tools,
-            instructions: VoxiCalAgent.agentInstructions
+            instructions: instructions
         )
     }
 
