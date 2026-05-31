@@ -221,3 +221,6 @@ __marimo__/
 plan/
 
 .DS_Store
+
+# claude
+.claude
