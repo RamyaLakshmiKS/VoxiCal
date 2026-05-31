@@ -4,7 +4,7 @@ import Combine
 // MARK: - ContentView
 
 struct ContentView: View {
-    @Environment(CalendarViewModel.self) private var viewModel
+    @Environment(VoxiCalAgent.self) private var viewModel
 
     var body: some View {
         NavigationStack {
@@ -72,7 +72,7 @@ struct ContentView: View {
 // MARK: - MessageScrollView
 
 private struct MessageScrollView: View {
-    @Environment(CalendarViewModel.self) private var viewModel
+    @Environment(VoxiCalAgent.self) private var viewModel
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -178,7 +178,7 @@ private struct TypingIndicatorView: View {
 // MARK: - InputAreaView
 
 private struct InputAreaView: View {
-    @Environment(CalendarViewModel.self) private var viewModel
+    @Environment(VoxiCalAgent.self) private var viewModel
     @State private var inputText = ""
     @FocusState private var isTextFieldFocused: Bool
 
@@ -205,7 +205,7 @@ private struct InputAreaView: View {
 // MARK: - IdleInputRow
 
 private struct IdleInputRow: View {
-    @Environment(CalendarViewModel.self) private var viewModel
+    @Environment(VoxiCalAgent.self) private var viewModel
     @Binding var inputText: String
     var fieldFocus: FocusState<Bool>.Binding
 
@@ -280,7 +280,7 @@ private struct IdleInputRow: View {
 // MARK: - RecordingInputRow
 
 private struct RecordingInputRow: View {
-    @Environment(CalendarViewModel.self) private var viewModel
+    @Environment(VoxiCalAgent.self) private var viewModel
     @Binding var inputText: String
     @State private var pulseScale: CGFloat = 1.0
     @State private var pulseOpacity: Double = 1.0
@@ -415,5 +415,5 @@ private struct ModelUnavailableBanner: View {
 
 #Preview {
     ContentView()
-        .environment(CalendarViewModel())
+        .environment(VoxiCalAgent())
 }
