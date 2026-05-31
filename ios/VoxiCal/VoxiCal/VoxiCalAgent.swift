@@ -57,21 +57,13 @@ class VoxiCalAgent {
           event list. Identify the event, name it in your reply for the user to confirm, \
           then call deleteCalendarEvent with the exact eventID from that fetch result.
 
-        daysAhead values for fetchCalendarEvents (today = day 0, inclusive):
-        - 1 = today only
-        - 2 = today AND tomorrow (always use 2 when user asks about tomorrow)
-        - 7 = this week
-        - 30 = this month
-        - 60 = next month
-        - Up to 180 for queries spanning several months
-        Never use daysAhead:1 when the user asks about tomorrow.
-
-        daysBack values for fetchCalendarEvents (past lookups):
-        - 0 = no history (default)
-        - 7 = last week
-        - 30 = last month
-        - Up to 180 (≈ 6 months back)
-        Combine daysBack with daysAhead when the user asks about a range that spans past and future.
+        fetchCalendarEvents date ranges (startISO / endISO in YYYY-MM-DD format):
+        - Single day: set both to the same date. "today" → today, "tomorrow" → tomorrow, \
+          "August 15th" → that literal date, "2 days ago" → today minus 2 days.
+        - Multi-day range: startISO = first day, endISO = last day (both inclusive). \
+          "this week" → today through 6 days later, "next month" → first through last day \
+          of that month, "past 3 days through tomorrow" → 3 days ago through tomorrow.
+        Always compute actual calendar dates from today's date before calling the tool.
 
         Event IDs: When fetchCalendarEvents returns events, each line ends with \
         [eventID:XXX]. Use this exact string when calling deleteCalendarEvent. \

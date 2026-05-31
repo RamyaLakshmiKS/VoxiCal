@@ -6,7 +6,7 @@ import os.log
 // MARK: - CalendarServiceProtocol
 
 protocol CalendarServiceProtocol: AnyObject {
-    func fetchEvents(daysAhead: Int, daysBack: Int, titleFilter: String?) async throws -> [CalendarEvent]
+    func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent]
     func deleteEvent(id: String) async throws
     func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent
     func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent
@@ -18,21 +18,16 @@ protocol CalendarServiceProtocol: AnyObject {
 final class MockCalendarService: CalendarServiceProtocol {
     var seedEvents: [CalendarEvent] = []
     private(set) var fetchCallCount = 0
-    private(set) var lastFetchArgs: (daysAhead: Int, daysBack: Int, titleFilter: String?)?
+    private(set) var lastFetchArgs: (start: Date, end: Date, titleFilter: String?)?
     private(set) var lastFetchResult: [CalendarEvent] = []
     private(set) var createCallCount = 0
     private(set) var updateCallCount = 0
     private(set) var lastCreatedEvent: CalendarEvent?
     private(set) var lastUpdatedEvent: CalendarEvent?
 
-    func fetchEvents(daysAhead: Int, daysBack: Int, titleFilter: String?) async throws -> [CalendarEvent] {
+    func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent] {
         fetchCallCount += 1
-        lastFetchArgs = (daysAhead, daysBack, titleFilter)
-
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let start = calendar.date(byAdding: .day, value: -max(daysBack, 0), to: today)!
-        let end   = calendar.date(byAdding: .day, value:  max(daysAhead, 1), to: today)!
+        lastFetchArgs = (start, end, titleFilter)
 
         let result = seedEvents
             .filter { event in

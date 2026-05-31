@@ -90,20 +90,10 @@ class CalendarService {
 
     // MARK: - Fetch
 
-    /// Returns events from `daysBack` days ago through `daysAhead` days forward, optionally filtered by title keyword.
-    /// - Parameters:
-    ///   - daysAhead: Days forward from today (max 180, ≈ 6 months).
-    ///   - daysBack: Days backward from today (max 180). Use 0 for today-only start.
-    ///   - titleFilter: Optional keyword matched case-insensitively against title.
-    func fetchEvents(daysAhead: Int, daysBack: Int = 0, titleFilter: String? = nil) async throws -> [CalendarEvent] {
+    func fetchEvents(start: Date, end: Date, titleFilter: String? = nil) async throws -> [CalendarEvent] {
         guard hasAccess || EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             throw CalendarError.accessDenied
         }
-
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let start = calendar.date(byAdding: .day, value: -max(daysBack, 0), to: today)!
-        let end = calendar.date(byAdding: .day, value: max(daysAhead, 1), to: today)!
 
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         let raw = store.events(matching: predicate)

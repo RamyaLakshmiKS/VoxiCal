@@ -4,11 +4,11 @@ import os.log
 
 // MARK: - Shared Date Parsing
 
-/// Parses a date string in "yyyy-MM-dd'T'HH:mm" format using the device's local timezone.
+/// Parses "yyyy-MM-dd" or "yyyy-MM-dd'T'HH:mm" strings using the device's local timezone.
 private func parseISO(_ iso: String) -> Date? {
     let f = DateFormatter()
-    f.dateFormat = "yyyy-MM-dd'T'HH:mm"
     f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = iso.count == 10 ? "yyyy-MM-dd" : "yyyy-MM-dd'T'HH:mm"
     return f.date(from: iso)
 }
 
@@ -27,19 +27,21 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
     @Generable
     struct Arguments {
         @Guide(description: """
-            Number of days to fetch starting from today (inclusive). \
-            Use 1 for today only, 2 to include tomorrow, 7 for this week, \
-            30 for this month, 60 for next month, up to 180 for queries \
-            spanning several months. Always use 2 when the user asks about tomorrow.
+            Start date in YYYY-MM-DD format. Compute from today's date: \
+            "today" → today's date, "2 days ago" → subtract 2 days, \
+            "next Monday" → the date of next Monday, \
+            "August 15th" → the literal date. Always use local calendar date.
             """)
-        var daysAhead: Int
+        var startISO: String
 
         @Guide(description: """
-            Number of days to look back from today (0 = no history). \
-            Use 30 for last month, 60 for two months ago, up to 180 (≈ 6 months). \
-            Combine with daysAhead to span past and future together.
+            End date in YYYY-MM-DD format, inclusive. \
+            For a single day set the same value as startISO. \
+            For a range: "this week" → 6 days after startISO, \
+            "next month" → last day of that month, \
+            "past 3 days through tomorrow" → tomorrow's date.
             """)
-        var daysBack: Int
+        var endISO: String
 
         @Guide(description: "Optional keyword to filter events by title. For example 'standup' or 'doctor'. Omit to return all events.")
         var titleFilter: String?
@@ -49,13 +51,22 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
 
     func call(arguments: Arguments) async throws -> String {
         let filterStr = arguments.titleFilter.map { "filter: \($0)" } ?? "no filter"
-        let toolMsg = "[TOOL: fetchCalendarEvents] daysAhead=\(arguments.daysAhead), daysBack=\(arguments.daysBack), \(filterStr)"
+        let toolMsg = "[TOOL: fetchCalendarEvents] start=\(arguments.startISO), end=\(arguments.endISO), \(filterStr)"
         print(toolMsg)
         logger.info("\(toolMsg, privacy: .public)")
-        
+
+        guard let startDate = parseISO(arguments.startISO) else {
+            return "Invalid start date '\(arguments.startISO)'. Use YYYY-MM-DD format."
+        }
+        guard let endDay = parseISO(arguments.endISO) else {
+            return "Invalid end date '\(arguments.endISO)'. Use YYYY-MM-DD format."
+        }
+        // Make end exclusive: fetch up to end of the specified end day
+        let endDate = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: endDay))!
+
         let events = try await calendarService.fetchEvents(
-            daysAhead: arguments.daysAhead,
-            daysBack: arguments.daysBack,
+            start: startDate,
+            end: endDate,
             titleFilter: arguments.titleFilter
         )
 
@@ -169,23 +180,13 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
 
         // Conflict detection — skipped if the user already confirmed override
         if !arguments.confirmDespiteConflict {
-            let cal = Calendar.current
-            let today = cal.startOfDay(for: Date())
-            let eventDay = cal.startOfDay(for: startDate)
-            let daysFromToday = cal.dateComponents([.day], from: today, to: eventDay).day ?? 0
-
-            if daysFromToday >= 0 {
-                let daysAhead = max(1, daysFromToday + 1)
-                let existing = try await calendarService.fetchEvents(daysAhead: daysAhead, daysBack: 0, titleFilter: nil)
-                let overlapping = existing.filter { $0.startDate < endDate && $0.endDate > startDate }
-
-                if !overlapping.isEmpty {
-                    let conflictList = overlapping.map { "• \($0.title) at \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")" }.joined(separator: "\n")
-                    let resultMsg = "[TOOL RESULT] Conflict detected: \(overlapping.count) overlapping event(s)"
-                    print(resultMsg)
-                    logger.info("\(resultMsg, privacy: .public)")
-                    return "Conflict detected — you already have:\n\(conflictList)\n\nAsk the user whether to pick a different time or proceed anyway."
-                }
+            let overlapping = try await calendarService.fetchEvents(start: startDate, end: endDate, titleFilter: nil)
+            if !overlapping.isEmpty {
+                let conflictList = overlapping.map { "• \($0.title) at \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")" }.joined(separator: "\n")
+                let resultMsg = "[TOOL RESULT] Conflict detected: \(overlapping.count) overlapping event(s)"
+                print(resultMsg)
+                logger.info("\(resultMsg, privacy: .public)")
+                return "Conflict detected — you already have:\n\(conflictList)\n\nAsk the user whether to pick a different time or proceed anyway."
             }
         }
 
