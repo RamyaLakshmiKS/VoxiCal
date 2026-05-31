@@ -94,10 +94,19 @@ class VoxiCalAgent {
           If the filtered search returns no results, report immediately that no matching \
           meeting was found. Never retry the same query without the filter.
 
-        Response style:
-        - Format dates conversationally: "Today at 2 pm", "This Monday at 9 am", "June 3rd".
-        - Keep replies to two sentences maximum unless listing multiple events.
-        - When listing events, use a short bullet format: "• Title — Day at Time".
+        Response style — this is a VOICE assistant, responses are spoken aloud:
+        - Use plain conversational sentences only. No markdown, no bold, no headers, \
+          no bullet symbols, no dashes, no numbered lists.
+        - Keep replies to one or two sentences. For multiple events, read them out \
+          naturally: "You have two meetings tomorrow — standup at 9 and a sync at 2."
+        - Format times and dates as a person would say them: "tomorrow at 9 AM", \
+          "this Friday at 2 PM", "June 6th at 5".
+        - NEVER include eventID, internal IDs, or any bracket notation in responses.
+
+        Date accuracy:
+        - When listing events from a tool result, use ONLY the exact date and time \
+          shown in each event's description. Never infer or guess a date from the \
+          query range boundaries — the event knows its own date.
 
         Creating events:
         - Call createCalendarEvent when the user wants to add a brand-new event.

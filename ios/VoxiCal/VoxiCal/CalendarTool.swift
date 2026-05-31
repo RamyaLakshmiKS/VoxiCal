@@ -92,13 +92,23 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
         let resultMsg = "[TOOL RESULT] Returned \(events.count) events"
         logger.info("\(resultMsg, privacy: .public)")
 
-        return events.map { event in
+        // Separate human-readable event lines from internal IDs so the model
+        // doesn't echo IDs into the user-facing response.
+        let eventLines = events.map { event -> String in
             var parts = [event.description]
-            if let loc = event.location { parts.append("Location: \(loc)") }
-            if let notes = event.notes   { parts.append("Notes: \(notes)") }
-            parts.append("[eventID:\(event.id)]")
-            return parts.joined(separator: " | ")
+            if let loc = event.location { parts.append("at \(loc)") }
+            if let notes = event.notes  { parts.append("(\(notes))") }
+            return parts.joined(separator: " ")
         }.joined(separator: "\n")
+
+        let idSection = events.map { "  \($0.title): \($0.id)" }.joined(separator: "\n")
+
+        return """
+        \(eventLines)
+
+        [INTERNAL — DO NOT SHOW TO USER — use only for update/delete tool calls]
+        \(idSection)
+        """
     }
 }
 
@@ -192,19 +202,23 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
         let overlapping = try await calendarService.fetchEvents(start: startDate, end: endDate, titleFilter: nil)
         if !overlapping.isEmpty {
             let conflictList = overlapping.map {
-                "• \($0.title) — \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "") [eventID:\($0.id)]"
+                "• \($0.title) — \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")"
             }.joined(separator: "\n")
+            let conflictIDs = overlapping.map { "  \($0.title): \($0.id)" }.joined(separator: "\n")
             let resultMsg = "[TOOL RESULT] Conflict detected: \(overlapping.count) overlapping event(s)"
             logger.info("\(resultMsg, privacy: .public)")
             return """
             Conflict detected. The new event overlaps with:
             \(conflictList)
 
-            Present this to the user and ask how they would like to proceed. Offer:
-            (a) Pick a different time → you will call createCalendarEvent with the new time
-            (b) Move the existing event to make room → you will call updateCalendarEvent using its [eventID] above
-            (c) Replace the existing event → you will call deleteCalendarEvent then createCalendarEvent
-            Do NOT make any calendar change until the user explicitly chooses.
+            Tell the user conversationally and ask how to proceed. Options:
+            (a) Pick a different time → call createCalendarEvent with the new time
+            (b) Move the existing event → call updateCalendarEvent using its ID below
+            (c) Replace the existing event → call deleteCalendarEvent then createCalendarEvent
+            Do NOT act until the user chooses.
+
+            [INTERNAL — DO NOT SHOW TO USER]
+            \(conflictIDs)
             """
         }
 

@@ -478,13 +478,15 @@ func askedForMissingDetailsGrader() -> Grader {
 func noEventIDInResponseGrader() -> Grader {
     { ctx in
         let exposed = ctx.agentResponse.localizedCaseInsensitiveContains("eventID") ||
-                      ctx.agentResponse.contains("[eventID:")
+                      ctx.agentResponse.contains("[eventID:") ||
+                      ctx.agentResponse.contains("INTERNAL") ||
+                      ctx.agentResponse.contains("Event ID:")
         return GradeResult(
             graderName: "No eventID exposed to user",
             passed: !exposed,
             message: !exposed
                 ? "✓ Agent did not expose eventIDs in response"
-                : "✗ Agent included eventID values in user-facing response"
+                : "✗ Agent included eventID or internal values in user-facing response"
         )
     }
 }
