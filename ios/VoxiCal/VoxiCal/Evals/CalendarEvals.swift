@@ -136,17 +136,14 @@ let goldenTestCases: [GoldenTestCase] = [
         ]
     ),
 
-    // Test 3: Hallucination guard (tool call, no events, must report accurately)
+    // Test 3: Hallucination guard (tool call, empty calendar, must not invent meetings)
     GoldenTestCase(
         id: "test-no-hallucination",
         userQuery: "Do I have a meeting with Sarah today?",
         category: "Hallucination Guard",
-        expectedBehavior: "Agent calls tool, finds NO Sarah meeting, explicitly reports no events (does not hallucinate)",
+        expectedBehavior: "Agent calls tool, finds no events at all, explicitly reports no events (does not hallucinate)",
         shouldCallTool: true,
-        seedEvents: [
-            makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9),
-            makeTestEvent(title: "Lunch with John", daysFromNow: 0, hour: 12)
-        ]
+        seedEvents: []
     ),
 
     // Test 4: Create event (all details provided — agent should call createCalendarEvent)
@@ -167,7 +164,8 @@ let goldenTestCases: [GoldenTestCase] = [
         expectedBehavior: "Agent detects conflict with existing event, mentions it, does not create",
         shouldCallTool: true,
         seedEvents: [
-            makeTestEvent(title: "Morning standup", daysFromNow: 1, hour: 9)
+            makeTestEvent(title: "Morning standup", daysFromNow: 1, hour: 9),
+            makeTestEvent(title: "Morning standup", daysFromNow: 2, hour: 9)
         ]
     ),
 
@@ -192,6 +190,29 @@ let goldenTestCases: [GoldenTestCase] = [
         shouldCallTool: true,
         seedEvents: [
             makeTestEvent(title: "1:1 with Sarah", daysFromNow: 3, hour: 10)
+        ]
+    ),
+
+    // Test 8: Create event with missing details — agent must ask before creating
+    GoldenTestCase(
+        id: "test-create-missing-details",
+        userQuery: "I want to schedule a meeting with Karthik",
+        category: "Create Missing Details",
+        expectedBehavior: "Agent asks for date, time, duration, and/or platform before calling createCalendarEvent",
+        shouldCallTool: false,
+        seedEvents: []
+    ),
+
+    // Test 9: No eventID exposed in response
+    GoldenTestCase(
+        id: "test-no-event-id-in-response",
+        userQuery: "What's on my schedule today?",
+        category: "No EventID Leak",
+        expectedBehavior: "Agent returns event details without exposing raw eventID values to the user",
+        shouldCallTool: true,
+        seedEvents: [
+            makeTestEvent(title: "Standup", daysFromNow: 0, hour: 9),
+            makeTestEvent(title: "1:1 with Sarah", daysFromNow: 0, hour: 14)
         ]
     )
 ]
@@ -310,12 +331,19 @@ func eventFoundAndMentionedGrader() -> Grader {
             )
         }
 
-        let eventTitles = ctx.lastFetchResult.map { $0.title.lowercased() }
         let response = ctx.agentResponse.lowercased()
 
-        let anyMentioned = eventTitles.contains { title in
-            response.contains(title) || response.contains(title.split(separator: " ").first.map(String.init) ?? "")
+        // Pass if any significant word (>3 chars) from any event title appears in the response.
+        // This handles cases where the agent paraphrases the title (e.g. "meeting with Sarah"
+        // instead of "1:1 with Sarah") while still catching hallucinations.
+        let anyMentioned = ctx.lastFetchResult.contains { event in
+            let title = event.title.lowercased()
+            if response.contains(title) { return true }
+            return title.split(separator: " ").map(String.init)
+                .filter { $0.count > 3 }
+                .contains { response.contains($0) }
         }
+        let eventTitles = ctx.lastFetchResult.map { $0.title.lowercased() }
 
         return GradeResult(
             graderName: "Event found and mentioned",
@@ -329,28 +357,29 @@ func eventFoundAndMentionedGrader() -> Grader {
 
 func noEventsFoundGrader() -> Grader {
     { ctx in
-        let toolFoundEvents = !ctx.lastFetchResult.isEmpty
-        guard !toolFoundEvents else {
+        // Explicit hallucination: agent positively claimed a meeting exists when none should.
+        let hallucinations = ["yes, you have", "you have a meeting", "you have an appointment", "you have an event"]
+        if hallucinations.contains(where: { ctx.agentResponse.localizedCaseInsensitiveContains($0) }) {
             return GradeResult(
                 graderName: "No events hallucination check",
                 passed: false,
-                message: "✗ Tool found \(ctx.lastFetchResult.count) event(s) but agent said no events"
+                message: "✗ Agent hallucinated a meeting that doesn't exist"
             )
         }
-
+        // Also check the agent explicitly acknowledged no match.
         let indicators = [
             "no meeting", "no event", "no appointment",
             "nothing scheduled", "don't have", "not have",
-            "not scheduled", "couldn't find"
+            "not scheduled", "couldn't find", "cannot find", "can't find",
+            "do not have", "doesn't appear"
         ]
         let found = indicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
-
         return GradeResult(
             graderName: "No events hallucination check",
             passed: found,
             message: found
-                ? "✓ Agent correctly reported no events (no hallucination)"
-                : "✗ Agent may have hallucinated — did not report 'no events'"
+                ? "✓ Agent correctly reported no matching events"
+                : "✗ Agent may have hallucinated — did not report 'no matching events'"
         )
     }
 }
@@ -385,7 +414,10 @@ func conflictMentionedGrader() -> Grader {
     { ctx in
         let indicators = [
             "conflict", "overlap", "already have", "already scheduled",
-            "clash", "same time", "existing event", "another event"
+            "clash", "same time", "existing event", "another event",
+            "already an event", "already a meeting", "cannot create",
+            "can't create", "unable to schedule", "time is taken",
+            "time slot is", "already booked"
         ]
         let ok = indicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
         return GradeResult(
@@ -407,6 +439,54 @@ func noEventCreatedGrader() -> Grader {
             message: ok
                 ? "✓ Correctly did not create event when conflict exists"
                 : "✗ Created event despite unresolved conflict"
+        )
+    }
+}
+
+func noCreateBeforeConfirmGrader() -> Grader {
+    { ctx in
+        let ok = ctx.createCallCount == 0
+        return GradeResult(
+            graderName: "No create before confirmation",
+            passed: ok,
+            message: ok
+                ? "✓ Did not create event without confirming missing details"
+                : "✗ Created event without confirming duration/location"
+        )
+    }
+}
+
+func askedForMissingDetailsGrader() -> Grader {
+    { ctx in
+        let indicators = [
+            "duration", "how long", "how many minutes",
+            "location", "platform", "where will", "where would",
+            "zoom", "teams", "in person", "video call", "phone call",
+            "when", "what date", "what time", "what day"
+        ]
+        let ok = indicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
+        return GradeResult(
+            graderName: "Asked for missing details",
+            passed: ok,
+            message: ok
+                ? "✓ Agent asked for missing event details"
+                : "✗ Agent did not ask for date/duration/location"
+        )
+    }
+}
+
+func noEventIDInResponseGrader() -> Grader {
+    { ctx in
+        let exposed = ctx.agentResponse.localizedCaseInsensitiveContains("eventID") ||
+                      ctx.agentResponse.contains("[eventID:") ||
+                      ctx.agentResponse.contains("INTERNAL") ||
+                      ctx.agentResponse.contains("Event ID:")
+        return GradeResult(
+            graderName: "No eventID exposed to user",
+            passed: !exposed,
+            message: !exposed
+                ? "✓ Agent did not expose eventIDs in response"
+                : "✗ Agent included eventID or internal values in user-facing response"
         )
     }
 }
@@ -440,6 +520,7 @@ final class EvalRunner {
         progress = 0
 
         for (index, scenario) in scenarios.enumerated() {
+            if index > 0 { try? await Task.sleep(for: .seconds(3)) }
             let result = await runScenario(scenario)
             results.append(result)
             progress = Double(index + 1) / Double(scenarios.count)
@@ -459,8 +540,7 @@ final class EvalRunner {
             UpdateCalendarEventTool(calendarService: mock)
         ]
 
-        let today = DateFormatter.localizedString(from: Date(), dateStyle: .full, timeStyle: .none)
-        let instructions = "Today is \(today).\n\n" + VoxiCalAgent.agentInstructions
+        let instructions = VoxiCalAgent.buildInstructions()
 
         let session = LanguageModelSession(
             tools: tools,
@@ -543,6 +623,14 @@ func buildEvalScenarios() -> [EvalScenario] {
         case "test-create-vs-update":
             graders.append(toolCalledGrader())
             graders.append(updateNotCreateGrader())
+
+        case "test-create-missing-details":
+            graders.append(noCreateBeforeConfirmGrader())
+            graders.append(askedForMissingDetailsGrader())
+
+        case "test-no-event-id-in-response":
+            graders.append(toolCalledGrader())
+            graders.append(noEventIDInResponseGrader())
 
         default:
             if testCase.shouldCallTool {

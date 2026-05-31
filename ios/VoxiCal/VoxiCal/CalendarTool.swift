@@ -4,11 +4,15 @@ import os.log
 
 // MARK: - Shared Date Parsing
 
-/// Parses "yyyy-MM-dd" or "yyyy-MM-dd'T'HH:mm" strings using the device's local timezone.
+/// Parses "yyyy-MM-dd", "yyyy-MM-dd'T'HH:mm", or "yyyy-MM-dd'T'HH:mm:ss" using local timezone.
 private func parseISO(_ iso: String) -> Date? {
     let f = DateFormatter()
     f.locale = Locale(identifier: "en_US_POSIX")
-    f.dateFormat = iso.count == 10 ? "yyyy-MM-dd" : "yyyy-MM-dd'T'HH:mm"
+    switch iso.count {
+    case 10: f.dateFormat = "yyyy-MM-dd"
+    case 16: f.dateFormat = "yyyy-MM-dd'T'HH:mm"
+    default: f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+    }
     return f.date(from: iso)
 }
 
@@ -43,7 +47,7 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
             """)
         var endISO: String
 
-        @Guide(description: "Optional keyword to filter events by title. For example 'standup' or 'doctor'. Omit to return all events.")
+        @Guide(description: "Specific name or keyword to filter by — e.g. 'Karthik', 'standup', 'doctor'. Omit for broad queries like 'what's on my schedule' or 'any meetings'. NEVER use generic words like 'meeting' or 'appointment' — they miss events not titled that way.")
         var titleFilter: String?
     }
 
@@ -51,8 +55,8 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
 
     func call(arguments: Arguments) async throws -> String {
         let filterStr = arguments.titleFilter.map { "filter: \($0)" } ?? "no filter"
+        // (effective filter computed after wildcard normalization below)
         let toolMsg = "[TOOL: fetchCalendarEvents] start=\(arguments.startISO), end=\(arguments.endISO), \(filterStr)"
-        print(toolMsg)
         logger.info("\(toolMsg, privacy: .public)")
 
         guard let startDate = parseISO(arguments.startISO) else {
@@ -64,30 +68,47 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
         // Make end exclusive: fetch up to end of the specified end day
         let endDate = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: endDay))!
 
+        // Normalize wildcard filters (*, all, any) to nil so all events are returned.
+        let effectiveFilter: String? = arguments.titleFilter.flatMap {
+            let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (t.isEmpty || t == "*" || t.lowercased() == "all" || t.lowercased() == "any") ? nil : t
+        }
+
         let events = try await calendarService.fetchEvents(
             start: startDate,
             end: endDate,
-            titleFilter: arguments.titleFilter
+            titleFilter: effectiveFilter
         )
 
         if events.isEmpty {
             let resultMsg = "[TOOL RESULT] No events found"
-            print(resultMsg)
             logger.info("\(resultMsg, privacy: .public)")
+            if let filter = arguments.titleFilter, !filter.isEmpty {
+                return "No events found matching '\(filter)'. There is no meeting involving '\(filter)' in this time range. Do not search again without the filter — unrelated events are not a match."
+            }
             return "No events found for the requested time range."
         }
         
         let resultMsg = "[TOOL RESULT] Returned \(events.count) events"
-        print(resultMsg)
         logger.info("\(resultMsg, privacy: .public)")
 
-        return events.map { event in
+        // Separate human-readable event lines from internal IDs so the model
+        // doesn't echo IDs into the user-facing response.
+        let eventLines = events.map { event -> String in
             var parts = [event.description]
-            if let loc = event.location { parts.append("Location: \(loc)") }
-            if let notes = event.notes   { parts.append("Notes: \(notes)") }
-            parts.append("[eventID:\(event.id)]")
-            return parts.joined(separator: " | ")
+            if let loc = event.location { parts.append("at \(loc)") }
+            if let notes = event.notes  { parts.append("(\(notes))") }
+            return parts.joined(separator: " ")
         }.joined(separator: "\n")
+
+        let idSection = events.map { "  \($0.title): \($0.id)" }.joined(separator: "\n")
+
+        return """
+        \(eventLines)
+
+        [INTERNAL — DO NOT SHOW TO USER — use only for update/delete tool calls]
+        \(idSection)
+        """
     }
 }
 
@@ -116,13 +137,11 @@ struct DeleteCalendarEventTool: Tool, @unchecked Sendable {
 
     func call(arguments: Arguments) async throws -> String {
         let toolMsg = "[TOOL: deleteCalendarEvent] eventID=\(arguments.eventID), title=\(arguments.eventTitle)"
-        print(toolMsg)
         logger.info("\(toolMsg, privacy: .public)")
 
         try await calendarService.deleteEvent(id: arguments.eventID)
 
         let resultMsg = "[TOOL RESULT] Successfully deleted event: \(arguments.eventTitle)"
-        print(resultMsg)
         logger.info("\(resultMsg, privacy: .public)")
 
         return "Deleted '\(arguments.eventTitle)' from your calendar."
@@ -146,11 +165,11 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
         @Guide(description: "The title or name of the event.")
         var title: String
 
-        @Guide(description: "Start date and time in YYYY-MM-DDTHH:MM format using local time. Example: '2025-06-15T15:00' for June 15 at 3:00 PM.")
+        @Guide(description: "Start date and time in YYYY-MM-DDTHH:MM format using local time. Compute from today's ISO date. Example: if today is 2026-05-31, then tomorrow 9am = '2026-06-01T09:00'.")
         var startISO: String
 
-        @Guide(description: "Duration of the event in minutes, as confirmed by the user. Always ask the user if not specified.")
-        var durationMinutes: Int
+        @Guide(description: "Duration in minutes, as explicitly stated by the user. Omit (nil) if the user has not specified a duration — the tool will prompt you to ask first. NEVER assume 60 or any default.")
+        var durationMinutes: Int?
 
         @Guide(description: "Meeting platform or room (e.g., 'Zoom', 'Google Meet', 'Teams', 'Conference Room A', 'In person'). Always ask if not provided. Omit only if user explicitly says there is none.")
         var location: String?
@@ -158,48 +177,60 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
         @Guide(description: "Optional notes or description. Omit if not provided by the user.")
         var notes: String?
 
-        @Guide(description: "Set to true only when the user has explicitly confirmed they want to create the event despite an existing scheduling conflict. Default is false.")
-        var confirmDespiteConflict: Bool
     }
 
     let calendarService: any CalendarServiceProtocol
 
     func call(arguments: Arguments) async throws -> String {
-        let toolMsg = "[TOOL: createCalendarEvent] title=\(arguments.title), start=\(arguments.startISO), duration=\(arguments.durationMinutes)min, override=\(arguments.confirmDespiteConflict)"
-        print(toolMsg)
+        guard let durationMinutes = arguments.durationMinutes else {
+            logger.info("[TOOL: createCalendarEvent] blocked — duration missing")
+            return "Duration not specified. Ask the user how long the event should be (in minutes) before calling this tool again."
+        }
+
+        let toolMsg = "[TOOL: createCalendarEvent] title=\(arguments.title), start=\(arguments.startISO), duration=\(durationMinutes)min"
         logger.info("\(toolMsg, privacy: .public)")
 
         guard let startDate = parseISO(arguments.startISO) else {
             let err = "[TOOL RESULT] Invalid date format: \(arguments.startISO)"
-            print(err)
             logger.warning("\(err, privacy: .public)")
             return "Invalid date format '\(arguments.startISO)'. Use YYYY-MM-DDTHH:MM (e.g., '2025-06-15T15:00')."
         }
 
-        let endDate = startDate.addingTimeInterval(Double(arguments.durationMinutes) * 60)
+        let endDate = startDate.addingTimeInterval(Double(durationMinutes) * 60)
 
-        // Conflict detection — skipped if the user already confirmed override
-        if !arguments.confirmDespiteConflict {
-            let overlapping = try await calendarService.fetchEvents(start: startDate, end: endDate, titleFilter: nil)
-            if !overlapping.isEmpty {
-                let conflictList = overlapping.map { "• \($0.title) at \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")" }.joined(separator: "\n")
-                let resultMsg = "[TOOL RESULT] Conflict detected: \(overlapping.count) overlapping event(s)"
-                print(resultMsg)
-                logger.info("\(resultMsg, privacy: .public)")
-                return "Conflict detected — you already have:\n\(conflictList)\n\nAsk the user whether to pick a different time or proceed anyway."
-            }
+        // Always run conflict detection.
+        let overlapping = try await calendarService.fetchEvents(start: startDate, end: endDate, titleFilter: nil)
+        if !overlapping.isEmpty {
+            let conflictList = overlapping.map {
+                "• \($0.title) — \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")"
+            }.joined(separator: "\n")
+            let conflictIDs = overlapping.map { "  \($0.title): \($0.id)" }.joined(separator: "\n")
+            let resultMsg = "[TOOL RESULT] Conflict detected: \(overlapping.count) overlapping event(s)"
+            logger.info("\(resultMsg, privacy: .public)")
+            return """
+            Conflict detected. The new event overlaps with:
+            \(conflictList)
+
+            Tell the user conversationally and ask how to proceed. Options:
+            (a) Pick a different time → call createCalendarEvent with the new time
+            (b) Move the existing event → call updateCalendarEvent using its ID below
+            (c) Replace the existing event → call deleteCalendarEvent then createCalendarEvent
+            Do NOT act until the user chooses.
+
+            [INTERNAL — DO NOT SHOW TO USER]
+            \(conflictIDs)
+            """
         }
 
         let created = try await calendarService.createEvent(
             title: arguments.title,
             startDate: startDate,
-            durationMinutes: arguments.durationMinutes,
+            durationMinutes: durationMinutes,
             location: arguments.location,
             notes: arguments.notes
         )
 
         let resultMsg = "[TOOL RESULT] Created event: \(created.title)"
-        print(resultMsg)
         logger.info("\(resultMsg, privacy: .public)")
 
         return "Created '\(created.title)' — \(created.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")."
@@ -229,7 +260,7 @@ struct UpdateCalendarEventTool: Tool, @unchecked Sendable {
         @Guide(description: "New title if the user wants to rename the event. Omit to keep unchanged.")
         var newTitle: String?
 
-        @Guide(description: "New start date and time in YYYY-MM-DDTHH:MM local format. For relative changes ('next hour', 'next Monday', 'Friday at 2pm'), compute the actual date from today before calling. Omit to keep unchanged.")
+        @Guide(description: "New start date and time in YYYY-MM-DDTHH:MM local format. Compute from today's ISO date — e.g., if today is 2026-05-30, then 'next Monday 2pm' = '2026-06-01T14:00'. Omit to keep unchanged.")
         var newStartISO: String?
 
         @Guide(description: "New duration in minutes. Only include if the user explicitly changes the duration. Omit to keep the original duration.")
@@ -246,14 +277,12 @@ struct UpdateCalendarEventTool: Tool, @unchecked Sendable {
 
     func call(arguments: Arguments) async throws -> String {
         let toolMsg = "[TOOL: updateCalendarEvent] eventID=\(arguments.eventID), title=\(arguments.currentTitle)"
-        print(toolMsg)
         logger.info("\(toolMsg, privacy: .public)")
 
         var newStartDate: Date? = nil
         if let iso = arguments.newStartISO {
             guard let date = parseISO(iso) else {
                 let err = "[TOOL RESULT] Invalid date format: \(iso)"
-                print(err)
                 logger.warning("\(err, privacy: .public)")
                 return "Invalid date format '\(iso)'. Use YYYY-MM-DDTHH:MM (e.g., '2025-06-15T15:00')."
             }
@@ -270,7 +299,6 @@ struct UpdateCalendarEventTool: Tool, @unchecked Sendable {
         )
 
         let resultMsg = "[TOOL RESULT] Updated event: \(updated.title)"
-        print(resultMsg)
         logger.info("\(resultMsg, privacy: .public)")
 
         return "Updated '\(arguments.currentTitle)': \(updated.description)."
