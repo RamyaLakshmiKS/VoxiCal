@@ -6,8 +6,34 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		E1A2B3C4D5E6000022BB0011 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0001 /* CalendarService.swift */; };
+		E1A2B3C4D5E6000022BB0012 /* CalendarTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0002 /* CalendarTool.swift */; };
+		E1A2B3C4D5E6000022BB0013 /* VoxiCalAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0003 /* VoxiCalAgent.swift */; };
+		E1A2B3C4D5E6000022BB0014 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0004 /* SpeechService.swift */; };
+		E1A2B3C4D5E6000022BB0015 /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0005 /* TTSService.swift */; };
+		E1A2B3C4D5E6000022BB0016 /* CalendarEvals.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0006 /* CalendarEvals.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E1A2B3C4D5E6000011AA0009 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2DFD9DE92FC9603C00883BD2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2DFD9DF02FC9603C00883BD2;
+			remoteInfo = VoxiCal;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		2DFD9DF12FC9603C00883BD2 /* VoxiCal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoxiCal.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E1A2B3C4D5E6000011AA0001 /* VoxiCalTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VoxiCalTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E1A2B3C4D5E6000022BB0001 /* CalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CalendarService.swift; path = VoxiCal/CalendarService.swift; sourceTree = SOURCE_ROOT; };
+		E1A2B3C4D5E6000022BB0002 /* CalendarTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CalendarTool.swift; path = VoxiCal/CalendarTool.swift; sourceTree = SOURCE_ROOT; };
+		E1A2B3C4D5E6000022BB0003 /* VoxiCalAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VoxiCalAgent.swift; path = VoxiCal/VoxiCalAgent.swift; sourceTree = SOURCE_ROOT; };
+		E1A2B3C4D5E6000022BB0004 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SpeechService.swift; path = VoxiCal/SpeechService.swift; sourceTree = SOURCE_ROOT; };
+		E1A2B3C4D5E6000022BB0005 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TTSService.swift; path = VoxiCal/TTSService.swift; sourceTree = SOURCE_ROOT; };
+		E1A2B3C4D5E6000022BB0006 /* CalendarEvals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CalendarEvals.swift; path = VoxiCal/Evals/CalendarEvals.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +42,22 @@
 			path = VoxiCal;
 			sourceTree = "<group>";
 		};
+		E1A2B3C4D5E6000011AA0002 /* VoxiCalTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = VoxiCalTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		2DFD9DEE2FC9603C00883BD2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E1A2B3C4D5E6000011AA0004 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +71,7 @@
 			isa = PBXGroup;
 			children = (
 				2DFD9DF32FC9603C00883BD2 /* VoxiCal */,
+				E1A2B3C4D5E6000011AA0002 /* VoxiCalTests */,
 				2DFD9DF22FC9603C00883BD2 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +80,7 @@
 			isa = PBXGroup;
 			children = (
 				2DFD9DF12FC9603C00883BD2 /* VoxiCal.app */,
+				E1A2B3C4D5E6000011AA0001 /* VoxiCalTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +110,27 @@
 			productReference = 2DFD9DF12FC9603C00883BD2 /* VoxiCal.app */;
 			productType = "com.apple.product-type.application";
 		};
+		E1A2B3C4D5E6000011AA0005 /* VoxiCalTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E1A2B3C4D5E6000011AA0008 /* Build configuration list for PBXNativeTarget "VoxiCalTests" */;
+			buildPhases = (
+				E1A2B3C4D5E6000011AA0003 /* Sources */,
+				E1A2B3C4D5E6000011AA0004 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E1A2B3C4D5E6000011AA0002 /* VoxiCalTests */,
+			);
+			name = VoxiCalTests;
+			packageProductDependencies = (
+			);
+			productName = VoxiCalTests;
+			productReference = E1A2B3C4D5E6000011AA0001 /* VoxiCalTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -81,6 +142,9 @@
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
 					2DFD9DF02FC9603C00883BD2 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					E1A2B3C4D5E6000011AA0005 = {
 						CreatedOnToolsVersion = 26.5;
 					};
 				};
@@ -100,6 +164,7 @@
 			projectRoot = "";
 			targets = (
 				2DFD9DF02FC9603C00883BD2 /* VoxiCal */,
+				E1A2B3C4D5E6000011AA0005 /* VoxiCalTests */,
 			);
 		};
 /* End PBXProject section */
@@ -119,6 +184,19 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E1A2B3C4D5E6000011AA0003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1A2B3C4D5E6000022BB0011 /* CalendarService.swift in Sources */,
+				E1A2B3C4D5E6000022BB0012 /* CalendarTool.swift in Sources */,
+				E1A2B3C4D5E6000022BB0013 /* VoxiCalAgent.swift in Sources */,
+				E1A2B3C4D5E6000022BB0014 /* SpeechService.swift in Sources */,
+				E1A2B3C4D5E6000022BB0015 /* TTSService.swift in Sources */,
+				E1A2B3C4D5E6000022BB0016 /* CalendarEvals.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -318,6 +396,40 @@
 			};
 			name = Release;
 		};
+		E1A2B3C4D5E6000011AA0006 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = Q93D62T82F;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.ramya-app.VoxiCalTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E1A2B3C4D5E6000011AA0007 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = Q93D62T82F;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.ramya-app.VoxiCalTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -335,6 +447,15 @@
 			buildConfigurations = (
 				2DFD9DFD2FC9603D00883BD2 /* Debug */,
 				2DFD9DFE2FC9603D00883BD2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E1A2B3C4D5E6000011AA0008 /* Build configuration list for PBXNativeTarget "VoxiCalTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E1A2B3C4D5E6000011AA0006 /* Debug */,
+				E1A2B3C4D5E6000011AA0007 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
