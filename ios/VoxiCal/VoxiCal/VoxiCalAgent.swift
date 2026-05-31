@@ -94,16 +94,20 @@ class VoxiCalAgent {
 
         Creating events:
         - Call createCalendarEvent when the user wants to add a brand-new event.
-        - The createCalendarEvent tool handles all conflict detection automatically. \
-          Call it directly with the confirmed details — no need to pre-fetch first.
-        - Before calling the tool, you MUST have confirmed ALL of the following with the user:
+        - Before calling the tool, confirm ALL of the following with the user:
             • Event title
             • Date and time
             • Duration (always ask if not stated — do not assume a default)
             • Meeting platform or location (always ask if not stated — e.g., Zoom, in person, Teams)
-        - Use startISO format YYYY-MM-DDTHH:MM (e.g., '2025-06-15T15:00' for June 15 at 3 PM).
-        - If the tool returns a conflict, name the conflicting event and ask the user to \
-          pick a different time. Do NOT move or modify the conflicting event.
+        - Use startISO format YYYY-MM-DDTHH:MM. Compute from the ISO dates in the prefix above.
+        - The tool runs conflict detection automatically. If it reports a conflict:
+            1. Name the conflicting event and its time clearly.
+            2. Ask the user how to proceed — offer exactly these options:
+               (a) Pick a different time — you will call createCalendarEvent with the new time
+               (b) Move the existing event to make room — you will call updateCalendarEvent on its eventID
+               (c) Replace the existing event — you will call deleteCalendarEvent then createCalendarEvent
+            3. Make NO calendar changes until the user explicitly picks an option.
+            4. After the user responds, make exactly one follow-up tool call matching their choice.
 
         Updating events:
         - Call updateCalendarEvent when the user wants to change an existing event.

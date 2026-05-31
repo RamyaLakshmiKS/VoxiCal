@@ -155,7 +155,7 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
         @Guide(description: "The title or name of the event.")
         var title: String
 
-        @Guide(description: "Start date and time in YYYY-MM-DDTHH:MM format using local time. Compute from today's ISO date. Example: if today is 2026-05-30, then tomorrow 9am = '2026-05-31T09:00'.")
+        @Guide(description: "Start date and time in YYYY-MM-DDTHH:MM format using local time. Compute from today's ISO date. Example: if today is 2026-05-31, then tomorrow 9am = '2026-06-01T09:00'.")
         var startISO: String
 
         @Guide(description: "Duration of the event in minutes, as confirmed by the user. Always ask the user if not specified.")
@@ -166,6 +166,7 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
 
         @Guide(description: "Optional notes or description. Omit if not provided by the user.")
         var notes: String?
+
     }
 
     let calendarService: any CalendarServiceProtocol
@@ -182,13 +183,24 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
 
         let endDate = startDate.addingTimeInterval(Double(arguments.durationMinutes) * 60)
 
-        // Always run conflict detection — cannot be bypassed by the model.
+        // Always run conflict detection.
         let overlapping = try await calendarService.fetchEvents(start: startDate, end: endDate, titleFilter: nil)
         if !overlapping.isEmpty {
-            let conflictList = overlapping.map { "• \($0.title) at \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")" }.joined(separator: "\n")
+            let conflictList = overlapping.map {
+                "• \($0.title) — \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "") [eventID:\($0.id)]"
+            }.joined(separator: "\n")
             let resultMsg = "[TOOL RESULT] Conflict detected: \(overlapping.count) overlapping event(s)"
             logger.info("\(resultMsg, privacy: .public)")
-            return "Conflict detected — you already have:\n\(conflictList)\n\nDo NOT move or modify the existing event. Tell the user there is a conflict and ask them to choose a different time for the new event."
+            return """
+            Conflict detected. The new event overlaps with:
+            \(conflictList)
+
+            Present this to the user and ask how they would like to proceed. Offer:
+            (a) Pick a different time → you will call createCalendarEvent with the new time
+            (b) Move the existing event to make room → you will call updateCalendarEvent using its [eventID] above
+            (c) Replace the existing event → you will call deleteCalendarEvent then createCalendarEvent
+            Do NOT make any calendar change until the user explicitly chooses.
+            """
         }
 
         let created = try await calendarService.createEvent(
