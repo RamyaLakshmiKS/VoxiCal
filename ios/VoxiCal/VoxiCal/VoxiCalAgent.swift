@@ -63,7 +63,9 @@ class VoxiCalAgent {
         - Multi-day range: startISO = first day, endISO = last day (both inclusive). \
           "this week" → today through 6 days later, "next month" → first through last day \
           of that month, "past 3 days through tomorrow" → 3 days ago through tomorrow.
-        Always compute actual calendar dates from today's date before calling the tool.
+        Always compute actual calendar dates from today's date before calling the tool. \
+        IMPORTANT: Always fetch with a SINGLE call covering the full date range — \
+        never call this tool multiple times to iterate through individual days.
 
         Event IDs: When fetchCalendarEvents returns events, each line ends with \
         [eventID:XXX]. Use this exact string when calling deleteCalendarEvent. \
@@ -74,11 +76,16 @@ class VoxiCalAgent {
         - ONLY report events that appear verbatim in the fetchCalendarEvents tool response.
         - If the tool returns "No events found", tell the user there are no events. \
           Never invent or imply a meeting exists.
-        - If events are returned but none match the person, company, or email the user \
-          asked about, say explicitly that no matching meeting was found. \
-          Do not assume a partial title match counts as a match.
+        - An event matches a person ONLY if that person's name appears in the event title. \
+          "Team standup" is NOT a meeting with Sarah. "Lunch with John" is NOT a meeting \
+          with Sarah. Never associate an event with a person whose name is not in the title.
+        - If events are returned but none have the person's name in the title, say explicitly \
+          that no matching meeting was found. Do not assume any event counts as a match.
         - Inventing a "yes, you have a meeting" when none exists is a critical error. \
           When in doubt, say no and suggest the user check their calendar app directly.
+        - When searching for a meeting with a specific person, use titleFilter with their name. \
+          If the filtered search returns no results, report immediately that no matching \
+          meeting was found. Never retry the same query without the filter.
 
         Response style:
         - Format dates conversationally: "Today at 2 pm", "This Monday at 9 am", "June 3rd".
@@ -87,19 +94,21 @@ class VoxiCalAgent {
 
         Creating events:
         - Call createCalendarEvent when the user wants to add a brand-new event.
+        - The createCalendarEvent tool handles all conflict detection automatically. \
+          Call it directly with the confirmed details — no need to pre-fetch first.
         - Before calling the tool, you MUST have confirmed ALL of the following with the user:
             • Event title
             • Date and time
             • Duration (always ask if not stated — do not assume a default)
             • Meeting platform or location (always ask if not stated — e.g., Zoom, in person, Teams)
         - Use startISO format YYYY-MM-DDTHH:MM (e.g., '2025-06-15T15:00' for June 15 at 3 PM).
-        - If the tool returns a conflict, briefly name the conflicting event and its time, \
-          then ask the user whether to pick a different time or proceed anyway.
-        - Only set confirmDespiteConflict:true after the user explicitly confirms they want to proceed.
+        - If the tool returns a conflict, name the conflicting event and ask the user to \
+          pick a different time. Do NOT move or modify the conflicting event.
 
         Updating events:
         - Call updateCalendarEvent when the user wants to change an existing event.
-        - Always call fetchCalendarEvents first to obtain the exact eventID.
+        - Always call fetchCalendarEvents first to obtain the exact eventID. \
+          Use the startISO and endISO values already computed in the date prefix above.
         - Only pass fields the user explicitly wants changed; omit others (nil = leave unchanged).
         - An empty string for location or notes clears that field — use only when the user \
           explicitly says to remove it.
@@ -155,6 +164,28 @@ class VoxiCalAgent {
 
     // MARK: - Session Construction
 
+    /// Builds the instruction string with today's full and ISO dates so the model can
+    /// resolve relative references ("tomorrow", "next Friday") to concrete date strings.
+    static func buildInstructions() -> String {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        let isoToday       = f.string(from: today)
+        let isoTomorrow    = f.string(from: cal.date(byAdding: .day, value: 1,  to: today)!)
+        let iso14DaysLater = f.string(from: cal.date(byAdding: .day, value: 14, to: today)!)
+        let verbose = DateFormatter.localizedString(from: Date(), dateStyle: .full, timeStyle: .none)
+        let prefix = """
+            Today is \(verbose). \
+            YYYY-MM-DD dates: today=\(isoToday), tomorrow=\(isoTomorrow), \
+            14-days-from-today=\(iso14DaysLater). \
+            When fetching to find an event to update or reschedule: \
+            use startISO='\(isoToday)' (today) and endISO='\(iso14DaysLater)' (14 days out). \
+            Do NOT use \(iso14DaysLater) as startISO.
+            """
+        return prefix + "\n\n" + agentInstructions
+    }
+
     private func buildSession() {
         let tools: [any Tool] = [
             FetchCalendarEventsTool(calendarService: calendarService),
@@ -165,10 +196,7 @@ class VoxiCalAgent {
 
         logger.info("Building LanguageModelSession with 4 tools: fetchCalendarEvents, deleteCalendarEvent, createCalendarEvent, updateCalendarEvent")
 
-        // Prepend today's date so the LLM can resolve relative references like "tomorrow" or "next Friday".
-        // agentInstructions is a static developer string — never interpolate user input into it.
-        let today = DateFormatter.localizedString(from: Date(), dateStyle: .full, timeStyle: .none)
-        let instructions = "Today is \(today).\n\n" + VoxiCalAgent.agentInstructions
+        let instructions = VoxiCalAgent.buildInstructions()
 
         session = LanguageModelSession(
             tools: tools,
@@ -183,12 +211,10 @@ class VoxiCalAgent {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isProcessing else { return }
 
-        print("[USER] \(trimmed)")
         logger.info("[USER] \(trimmed, privacy: .public)")
-        
+
         // Auto-reset conversation after 16 messages (8 turns) to prevent context window overflow
         if messages.count >= 16 {
-            print("Context window approaching limit (16 messages) — clearing conversation")
             logger.info("Context window approaching limit (16 messages) — clearing conversation")
             clearConversation()
         }
@@ -206,23 +232,31 @@ class VoxiCalAgent {
         isProcessing  = true
         errorMessage  = nil
 
-        do {
-            // Foundation Models orchestrates all tool calls autonomously.
-            // respond(to:) does not return until the model has finished reasoning
-            // and executing every tool call it decided to make.
-            let response = try await session.respond(to: trimmed)
-            let responseText = response.content
+        var responseText: String?
+        var lastError: Error?
 
-            print("[AGENT] \(responseText)")
-            logger.info("[AGENT] \(responseText, privacy: .public)")
-            messages.append(ChatMessage(role: .assistant, text: responseText))
+        for attempt in 1...3 {
+            do {
+                let response = try await session.respond(to: trimmed)
+                responseText = response.content
+                break
+            } catch {
+                lastError = error
+                let isTransient = error.localizedDescription.contains("error -1")
+                    || error.localizedDescription.localizedCaseInsensitiveContains("generation")
+                guard isTransient && attempt < 3 else { break }
+                logger.warning("Transient model error (attempt \(attempt)/3), retrying in \(attempt * 2)s…")
+                try? await Task.sleep(for: .seconds(Double(attempt * 2)))
+            }
+        }
 
-            // Speak the response — audio session handoff handled inside TTSService
-            ttsService.speak(responseText)
-
-        } catch {
-            let friendly = friendlyError(from: error)
-            logger.error("Error during agent response: \(error.localizedDescription)")
+        if let text = responseText {
+            logger.info("[AGENT] \(text, privacy: .public)")
+            messages.append(ChatMessage(role: .assistant, text: text))
+            ttsService.speak(text)
+        } else {
+            let friendly = friendlyError(from: lastError ?? NSError(domain: "VoxiCal", code: -1))
+            logger.error("Agent failed after 3 attempts: \(lastError?.localizedDescription ?? "unknown")")
             messages.append(ChatMessage(role: .assistant, text: friendly))
         }
 
