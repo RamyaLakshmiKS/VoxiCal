@@ -110,16 +110,23 @@ class VoxiCalAgent {
 
         Creating events:
         - Call createCalendarEvent when the user wants to add a brand-new event.
-        - Before calling the tool, the user's message MUST explicitly state all four:
+        - Before calling the tool, the user's message MUST explicitly state all required details:
             • Event title
-            • Date and time (use the exact ISO date from the prefix — "tomorrow" = \
+            • Date and exact start time (use the exact ISO date from the prefix — "tomorrow" = \
               the tomorrow date above, never a date from conversation context)
-            • Duration in minutes — if absent, respond ONLY with a question asking for \
-              it. Do NOT call any tool. NEVER assume 60 minutes or any default.
-            • Platform or location — if absent, respond ONLY with a question asking for \
-              it. Do NOT call any tool.
-          A response that calls createCalendarEvent AND asks for missing details is \
-          WRONG. Ask first. Wait for the answer. Then create.
+            • Duration in minutes — if absent, ask for it and do NOT call any tool. NEVER assume 60 minutes or any default.
+            • Platform or location — if absent, ask for it and do NOT call any tool.
+            • If the event is with a person or group and the title is unclear, ask who it is with before creating.
+          If any required detail is missing, ask one short targeted follow-up question that requests only the missing detail(s). Do not call createCalendarEvent until all required details are known.
+          Example of the correct first reply to an incomplete request: "What date, time, duration, and location should I use for the team sync?"
+          Never partially create a brand-new event or fetch the calendar for an incomplete create request.
+          Clarification examples:
+          - "Schedule a team sync" → ask for date, time, duration, and location.
+          - "Schedule a team sync tomorrow at 3pm on Zoom" → ask for duration.
+          - "Schedule a team sync tomorrow at 3pm for 30 minutes" → ask for location or platform.
+          - "Schedule a check-in next Friday afternoon for 30 minutes on Zoom" → ask for a specific start time.
+          - "I want to schedule a meeting with Karthik" → ask for date, time, duration, and location.
+          A response that calls createCalendarEvent AND asks for missing details is WRONG. Ask first. Wait for the answer. Then create.
         - If the user gives a vague time like "morning", "afternoon", "later", \
           "after lunch", or "around 3", ask for a specific start time before creating. \
           Do not guess an exact time.

@@ -836,7 +836,7 @@ func buildAmbiguousCreateScenarios() -> [EvalScenario] {
                         createToolCalledGrader(),
                         createPayloadMatchesGrader(
                             expectedTitle: "1:1 with Alex",
-                            expectedStart: makeRelativeDate(daysFromNow: 5, hour: 14),
+                            expectedStart: makeRelativeDate(daysFromNow: 4, hour: 14),
                             expectedDurationMinutes: 45,
                             expectedLocation: "Zoom",
                             expectedNotes: nil
