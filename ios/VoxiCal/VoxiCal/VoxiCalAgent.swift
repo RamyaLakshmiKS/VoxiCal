@@ -281,17 +281,20 @@ class VoxiCalAgent {
         if let pending = pendingCreateRequest {
           let combinedRequest = pending + " " + trimmed
           if let draft = parseCreateDraft(from: combinedRequest) {
-            // All required fields present — create directly without hitting the LLM.
+            // All required fields collected. Route through the LLM session so that
+            // conflict responses, confirmations, and errors are always natural language.
+            // Calling the tool directly would expose raw tool-result text to the user.
             self.pendingCreateRequest = nil
-            let tool = CreateCalendarEventTool(calendarService: calendarService)
+            let synthesized = synthesizeCreatePrompt(from: draft)
+            logger.info("[FAST-PATH→LLM] \(synthesized, privacy: .public)")
             do {
-              let response = try await tool.call(arguments: draft)
-              logger.info("[AGENT] \(response, privacy: .public)")
-              messages.append(ChatMessage(role: .assistant, text: response))
-              ttsService.speak(response)
+              let response = try await session.respond(to: synthesized)
+              logger.info("[AGENT] \(response.content, privacy: .public)")
+              messages.append(ChatMessage(role: .assistant, text: response.content))
+              ttsService.speak(response.content)
             } catch {
               let friendly = friendlyError(from: error)
-              logger.error("Create draft flow failed: \(error.localizedDescription, privacy: .public)")
+              logger.error("Create via LLM failed: \(error.localizedDescription, privacy: .public)")
               messages.append(ChatMessage(role: .assistant, text: friendly))
             }
             isProcessing = false
@@ -467,6 +470,19 @@ class VoxiCalAgent {
       return hasGenericWord && !hasPerson
     }
 
+    /// Builds a compact, structured prompt the LLM can act on once the fast-path
+    /// has collected all required fields. The LLM then calls createCalendarEvent
+    /// and handles conflicts, confirmations, and errors in natural language.
+    private func synthesizeCreatePrompt(from draft: CreateCalendarEventTool.Arguments) -> String {
+      var parts = ["Create an event:"]
+      parts.append("title '\(draft.title)'")
+      parts.append("starting \(draft.startISO)")
+      if let mins = draft.durationMinutes { parts.append("for \(mins) minutes") }
+      if let loc  = draft.location        { parts.append("at \(loc)") }
+      if let note = draft.notes           { parts.append("notes: \(note)") }
+      return parts.joined(separator: ", ")
+    }
+
     private func parseCreateDraft(from text: String) -> CreateCalendarEventTool.Arguments? {
       guard let title = extractedTitle(from: text),
           let startISO = makeStartISO(from: text),
@@ -601,15 +617,43 @@ class VoxiCalAgent {
 
     private func extractedDurationMinutes(from text: String) -> Int? {
       let lower = text.lowercased()
-      let pattern = #"\b(\d+)\s*(minutes?|mins?|hours?|hrs?)\b"#
-      guard let regex = try? NSRegularExpression(pattern: pattern),
-          let result = regex.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)) else {
-        return nil
+
+      // Natural-language fixed phrases (checked before digit/word patterns).
+      // Regex covers informal variants: "half n hr", "half n hour", "half an hour", "half-hour", etc.
+      if lower.range(of: #"\bhalf[\s-]*(?:an?\s+|n\s+)?h(?:our|r)\b"#, options: .regularExpression) != nil { return 30 }
+      if lower.contains("an hour and a half") || lower.contains("hour and a half") { return 90 }
+      if lower.contains("an hour") || lower.contains("a hour") { return 60 }
+
+      // Digit-based: "30 minutes", "2 hrs", "1 hour"
+      let digitPattern = #"\b(\d+)\s*(minutes?|mins?|hours?|hrs?)\b"#
+      if let regex = try? NSRegularExpression(pattern: digitPattern),
+         let result = regex.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)) {
+        let valueString = (lower as NSString).substring(with: result.range(at: 1))
+        let unit       = (lower as NSString).substring(with: result.range(at: 2))
+        if let value = Int(valueString) {
+          return unit.hasPrefix("hour") || unit.hasPrefix("hr") ? value * 60 : value
+        }
       }
-      let valueString = (lower as NSString).substring(with: result.range(at: 1))
-      let unit = (lower as NSString).substring(with: result.range(at: 2))
-      guard let value = Int(valueString) else { return nil }
-      return unit.hasPrefix("hour") || unit.hasPrefix("hr") ? value * 60 : value
+
+      // Word-number-based: "one hour", "thirty minutes", etc.
+      let wordNumbers: [(String, Int)] = [
+        ("sixty", 60), ("ninety", 90),
+        ("forty-five", 45), ("forty five", 45),
+        ("thirty", 30), ("forty", 40), ("twenty", 20), ("fifteen", 15),
+        ("ten", 10), ("five", 5),
+        ("one", 1), ("two", 2), ("three", 3), ("four", 4),
+        ("six", 6), ("seven", 7), ("eight", 8), ("nine", 9)
+      ]
+      for (word, value) in wordNumbers {
+        if lower.range(of: #"\b"# + word + #"\s*(?:hours?|hrs?)\b"#, options: .regularExpression) != nil {
+          return value * 60
+        }
+        if lower.range(of: #"\b"# + word + #"\s*(?:minutes?|mins?)\b"#, options: .regularExpression) != nil {
+          return value
+        }
+      }
+
+      return nil
     }
 
     private func extractedLocation(from text: String) -> String? {
