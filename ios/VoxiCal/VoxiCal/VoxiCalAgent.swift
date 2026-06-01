@@ -120,6 +120,11 @@ class VoxiCalAgent {
               it. Do NOT call any tool.
           A response that calls createCalendarEvent AND asks for missing details is \
           WRONG. Ask first. Wait for the answer. Then create.
+        - If the user gives a vague time like "morning", "afternoon", "later", \
+          "after lunch", or "around 3", ask for a specific start time before creating. \
+          Do not guess an exact time.
+        - If the user answers a clarification with only the missing details, reuse the \
+          earlier title/date/time from the conversation and create the event.
         - Use startISO format YYYY-MM-DDTHH:MM. Compute from the ISO dates in the prefix above.
         - The tool runs conflict detection automatically. If it reports a conflict:
             1. Name the conflicting event and its time clearly.

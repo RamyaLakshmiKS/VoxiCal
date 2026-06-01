@@ -28,6 +28,7 @@ struct ContentView: View {
             .toolbar {
                 #if DEBUG
                 ToolbarItem(placement: .topBarLeading) {
+                    #if canImport(XCTest)
                     Menu {
                         Button {
                             Task { _ = await runEvaluationSuite() }
@@ -37,6 +38,7 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: "testtube.2")
                     }
+                    #endif
                 }
                 #endif
                 ToolbarItem(placement: .topBarTrailing) {

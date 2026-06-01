@@ -3,15 +3,6 @@ import FoundationModels
 import SwiftUI
 import os.log
 
-// MARK: - CalendarServiceProtocol
-
-protocol CalendarServiceProtocol: AnyObject {
-    func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent]
-    func deleteEvent(id: String) async throws
-    func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent
-    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent
-}
-
 // MARK: - MockCalendarService
 
 @MainActor
@@ -24,6 +15,7 @@ final class MockCalendarService: CalendarServiceProtocol {
     private(set) var updateCallCount = 0
     private(set) var lastCreatedEvent: CalendarEvent?
     private(set) var lastUpdatedEvent: CalendarEvent?
+    private(set) var lastCreateArgs: (title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?)?
 
     func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent] {
         fetchCallCount += 1
@@ -31,7 +23,7 @@ final class MockCalendarService: CalendarServiceProtocol {
 
         let result = seedEvents
             .filter { event in
-                guard event.startDate >= start && event.startDate < end else { return false }
+                guard event.startDate < end && event.endDate > start else { return false }
                 guard let filter = titleFilter, !filter.isEmpty else { return true }
                 let inTitle = event.title.localizedCaseInsensitiveContains(filter)
                 let inNotes = event.notes?.localizedCaseInsensitiveContains(filter) ?? false
@@ -49,6 +41,7 @@ final class MockCalendarService: CalendarServiceProtocol {
 
     func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent {
         createCallCount += 1
+        lastCreateArgs = (title, startDate, durationMinutes, location, notes)
         let event = CalendarEvent(
             id: UUID().uuidString,
             title: title,
@@ -246,10 +239,14 @@ struct EvalContext {
     let userMessage: String
     let agentResponse: String
     let fetchCallCount: Int
+    let turnFetchCallCount: Int
     let lastFetchResult: [CalendarEvent]
     let createCallCount: Int
+    let turnCreateCallCount: Int
     let updateCallCount: Int
+    let turnUpdateCallCount: Int
     let lastCreatedEvent: CalendarEvent?
+    let lastCreateArgs: (title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?)?
 }
 
 struct GradeResult: Identifiable {
@@ -504,6 +501,101 @@ func updateNotCreateGrader() -> Grader {
     }
 }
 
+func noActionToolCallsThisTurnGrader() -> Grader {
+    { ctx in
+        let ok = ctx.turnFetchCallCount == 0 && ctx.turnCreateCallCount == 0 && ctx.turnUpdateCallCount == 0
+        return GradeResult(
+            graderName: "No action tools on this turn",
+            passed: ok,
+            message: ok
+                ? "✓ Did not call any calendar tool during this turn"
+                : "✗ Called a calendar tool during a turn that should have clarified instead"
+        )
+    }
+}
+
+func responseContainsAnyGrader(name: String, indicators: [String]) -> Grader {
+    { ctx in
+        let ok = indicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
+        return GradeResult(
+            graderName: name,
+            passed: ok,
+            message: ok
+                ? "✓ Agent asked for the missing or ambiguous detail"
+                : "✗ Agent response did not clearly ask for clarification"
+        )
+    }
+}
+
+func createPayloadMatchesGrader(
+    expectedTitle: String,
+    expectedStart: Date,
+    expectedDurationMinutes: Int,
+    expectedLocation: String?,
+    expectedNotes: String? = nil
+) -> Grader {
+    { ctx in
+        guard let created = ctx.lastCreatedEvent else {
+            return GradeResult(
+                graderName: "Create payload matches expected values",
+                passed: false,
+                message: "✗ No created event was captured"
+            )
+        }
+
+        let durationMinutes = Int(created.endDate.timeIntervalSince(created.startDate) / 60)
+        let ok = created.title == expectedTitle &&
+            Calendar.current.isDate(created.startDate, equalTo: expectedStart, toGranularity: .minute) &&
+            durationMinutes == expectedDurationMinutes &&
+            created.location == expectedLocation &&
+            created.notes == expectedNotes
+
+        let expectedDescription = "title=\(expectedTitle), start=\(expectedStart), duration=\(expectedDurationMinutes), location=\(expectedLocation ?? "nil")"
+        return GradeResult(
+            graderName: "Create payload matches expected values",
+            passed: ok,
+            message: ok
+                ? "✓ Created event matched the expected payload"
+                : "✗ Created event did not match expected payload: \(expectedDescription); got title=\(created.title), start=\(created.startDate), duration=\(durationMinutes), location=\(created.location ?? "nil")"
+        )
+    }
+}
+
+func createClarificationGrader() -> Grader {
+    responseContainsAnyGrader(
+        name: "Asked for clarification",
+        indicators: ["when", "what time", "how long", "duration", "location", "platform", "which", "please"]
+    )
+}
+
+func createPromptAskForDateTimeGrader() -> Grader {
+    responseContainsAnyGrader(
+        name: "Asked for date or time",
+        indicators: ["when", "what time", "what date", "what day", "time", "date"]
+    )
+}
+
+func createPromptAskForDurationGrader() -> Grader {
+    responseContainsAnyGrader(
+        name: "Asked for duration",
+        indicators: ["duration", "how long", "how many minutes", "minutes"]
+    )
+}
+
+func createPromptAskForLocationGrader() -> Grader {
+    responseContainsAnyGrader(
+        name: "Asked for location or platform",
+        indicators: ["location", "platform", "zoom", "teams", "meet", "where"]
+    )
+}
+
+func createPromptAskForSpecificTimeGrader() -> Grader {
+    responseContainsAnyGrader(
+        name: "Asked for a specific time",
+        indicators: ["specific time", "exact time", "what time", "which time", "what hour"]
+    )
+}
+
 // MARK: - EvalRunner
 
 @MainActor
@@ -550,6 +642,10 @@ final class EvalRunner {
         var turnResults: [TurnResult] = []
 
         for turn in scenario.turns {
+            let previousFetchCount = mock.fetchCallCount
+            let previousCreateCount = mock.createCallCount
+            let previousUpdateCount = mock.updateCallCount
+
             let agentResponse: String
             do {
                 let response = try await session.respond(to: turn.userMessage)
@@ -558,14 +654,22 @@ final class EvalRunner {
                 agentResponse = "[ERROR: \(error.localizedDescription)]"
             }
 
+            let turnFetchCount = mock.fetchCallCount - previousFetchCount
+            let turnCreateCount = mock.createCallCount - previousCreateCount
+            let turnUpdateCount = mock.updateCallCount - previousUpdateCount
+
             let context = EvalContext(
                 userMessage: turn.userMessage,
                 agentResponse: agentResponse,
                 fetchCallCount: mock.fetchCallCount,
+                turnFetchCallCount: turnFetchCount,
                 lastFetchResult: mock.lastFetchResult,
                 createCallCount: mock.createCallCount,
+                turnCreateCallCount: turnCreateCount,
                 updateCallCount: mock.updateCallCount,
-                lastCreatedEvent: mock.lastCreatedEvent
+                turnUpdateCallCount: turnUpdateCount,
+                lastCreatedEvent: mock.lastCreatedEvent,
+                lastCreateArgs: mock.lastCreateArgs
             )
 
             var gradingResults: [GradeResult] = []
@@ -650,6 +754,106 @@ func buildEvalScenarios() -> [EvalScenario] {
     }
 }
 
+func buildAmbiguousCreateScenarios() -> [EvalScenario] {
+    return [
+        EvalScenario(
+            id: "ambiguous-create-missing-all-details",
+            category: "Ambiguous Create",
+            name: "Schedule a team sync",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Schedule a team sync",
+                graders: [
+                    noActionToolCallsThisTurnGrader(),
+                    createClarificationGrader(),
+                    createPromptAskForDateTimeGrader(),
+                    createPromptAskForDurationGrader(),
+                    createPromptAskForLocationGrader()
+                ]
+            )]
+        ),
+        EvalScenario(
+            id: "ambiguous-create-missing-duration",
+            category: "Ambiguous Create",
+            name: "Schedule a team sync tomorrow at 3pm on Zoom",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Schedule a team sync tomorrow at 3pm on Zoom",
+                graders: [
+                    noActionToolCallsThisTurnGrader(),
+                    createClarificationGrader(),
+                    createPromptAskForDurationGrader()
+                ]
+            )]
+        ),
+        EvalScenario(
+            id: "ambiguous-create-missing-location",
+            category: "Ambiguous Create",
+            name: "Schedule a team sync tomorrow at 3pm for 30 minutes",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Schedule a team sync tomorrow at 3pm for 30 minutes",
+                graders: [
+                    noActionToolCallsThisTurnGrader(),
+                    createClarificationGrader(),
+                    createPromptAskForLocationGrader()
+                ]
+            )]
+        ),
+        EvalScenario(
+            id: "ambiguous-create-vague-time",
+            category: "Ambiguous Create",
+            name: "Schedule a check-in next Friday afternoon for 30 minutes on Zoom",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Schedule a check-in next Friday afternoon for 30 minutes on Zoom",
+                graders: [
+                    noActionToolCallsThisTurnGrader(),
+                    createClarificationGrader(),
+                    createPromptAskForSpecificTimeGrader()
+                ]
+            )]
+        ),
+        EvalScenario(
+            id: "ambiguous-create-context-followup",
+            category: "Ambiguous Create",
+            name: "Context-dependent create request",
+            seedEvents: [],
+            turns: [
+                EvalTurn(
+                    userMessage: "Schedule a 1:1 with Alex next Friday",
+                    graders: [
+                        noActionToolCallsThisTurnGrader(),
+                        createClarificationGrader(),
+                        createPromptAskForDateTimeGrader(),
+                        createPromptAskForDurationGrader(),
+                        createPromptAskForLocationGrader()
+                    ]
+                ),
+                EvalTurn(
+                    userMessage: "2pm for 45 minutes on Zoom",
+                    graders: [
+                        createToolCalledGrader(),
+                        createPayloadMatchesGrader(
+                            expectedTitle: "1:1 with Alex",
+                            expectedStart: makeRelativeDate(daysFromNow: 5, hour: 14),
+                            expectedDurationMinutes: 45,
+                            expectedLocation: "Zoom",
+                            expectedNotes: nil
+                        )
+                    ]
+                )
+            ]
+        )
+    ]
+}
+
+func makeRelativeDate(daysFromNow: Int, hour: Int, minute: Int = 0) -> Date {
+    let cal = Calendar.current
+    let base = cal.startOfDay(for: Date())
+    return cal.date(byAdding: DateComponents(day: daysFromNow, hour: hour, minute: minute), to: base)!
+}
+
 // MARK: - Test Harness
 
 @MainActor
@@ -688,6 +892,45 @@ func runEvaluationSuite() async -> (passed: Int, failed: Int) {
     print(String(repeating: "=", count: 80) + "\n")
 
     logger.info("Eval results: \(totalPassed)/\(runner.results.count) passed")
+
+    return (totalPassed, totalFailed)
+}
+
+@MainActor
+func runAmbiguousCreateEventSuite() async -> (passed: Int, failed: Int) {
+    let scenarios = buildAmbiguousCreateScenarios()
+    let runner = EvalRunner()
+    await runner.run(scenarios: scenarios)
+
+    let logger = Logger(subsystem: "com.ramya-app.VoxiCal.evals", category: "AmbiguousCreateHarness")
+
+    print("\n" + String(repeating: "=", count: 80))
+    print("AMBIGUOUS CREATE EVENT RESULTS")
+    print(String(repeating: "=", count: 80))
+
+    let totalPassed = runner.results.filter(\.passed).count
+    let totalFailed = runner.results.count - totalPassed
+
+    for result in runner.results {
+        let status = result.passed ? "✓ PASS" : "✗ FAIL"
+        print("\n[\(status)] \(result.scenarioName)")
+        print("    Category: \(result.category)")
+
+        for turnResult in result.turnResults {
+            print("    User: \(turnResult.userMessage)")
+            print("    Agent: \(turnResult.agentResponse)")
+            print("    Tool calls: \(turnResult.fetchCallCount)")
+
+            for grade in turnResult.gradingResults {
+                print("    \(grade.message)")
+            }
+        }
+    }
+
+    print("\nSUMMARY: \(totalPassed)/\(runner.results.count) passed")
+    print(String(repeating: "=", count: 80) + "\n")
+
+    logger.info("Ambiguous eval results: \(totalPassed)/\(runner.results.count) passed")
 
     return (totalPassed, totalFailed)
 }

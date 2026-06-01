@@ -60,6 +60,15 @@ enum CalendarError: LocalizedError {
     }
 }
 
+// MARK: - CalendarServiceProtocol
+
+protocol CalendarServiceProtocol: AnyObject {
+    func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent]
+    func deleteEvent(id: String) async throws
+    func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent
+    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent
+}
+
 // MARK: - CalendarService
 
 /// Wraps EventKit to provide async read and delete operations.
@@ -99,6 +108,9 @@ class CalendarService {
         let raw = store.events(matching: predicate)
 
         return raw
+            .filter { event in
+                event.startDate < end && event.endDate > start
+            }
             .filter { event in
                 guard let filter = titleFilter, !filter.isEmpty else { return true }
                 return event.title?.localizedCaseInsensitiveContains(filter) == true
