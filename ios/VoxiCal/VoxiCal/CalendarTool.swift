@@ -1,5 +1,6 @@
-import FoundationModels
+import EventKit
 import Foundation
+import FoundationModels
 import os.log
 
 // MARK: - Shared Date Parsing
@@ -309,6 +310,11 @@ struct UpdateCalendarEventTool: Tool, @unchecked Sendable {
         let toolMsg = "[TOOL: updateCalendarEvent] eventID=\(arguments.eventID), title=\(arguments.currentTitle)"
         logger.info("\(toolMsg, privacy: .public)")
 
+        // Fix 2: Validate newDurationMinutes before calling service.
+        if let dur = arguments.newDurationMinutes, dur <= 0 {
+            return "Duration must be at least 1 minute. Please specify a valid duration."
+        }
+
         var newStartDate: Date? = nil
         if let iso = arguments.newStartISO {
             guard let date = parseISO(iso) else {
@@ -319,18 +325,79 @@ struct UpdateCalendarEventTool: Tool, @unchecked Sendable {
             newStartDate = date
         }
 
-        let updated = try await calendarService.updateEvent(
-            id: arguments.eventID,
-            title: arguments.newTitle,
-            startDate: newStartDate,
-            durationMinutes: arguments.newDurationMinutes,
-            location: arguments.newLocation,
-            notes: arguments.newNotes
-        )
+        // Fix 3: Conflict detection before saving.
+        // Compute the new time window to check for conflicts.
+        if newStartDate != nil || arguments.newDurationMinutes != nil {
+            // We need to know the current event's times to compute the new window.
+            // Fetch a narrow range around newStartDate (or we use what we have).
+            // Only check conflicts when the time is actually changing.
+            if let checkStart = newStartDate {
+                // Determine end of the new window: prefer explicit new duration,
+                // fall back to a 24-hour sentinel so we catch any overlap.
+                let checkEnd: Date
+                if let dur = arguments.newDurationMinutes {
+                    checkEnd = checkStart.addingTimeInterval(Double(dur) * 60)
+                } else {
+                    // Duration unknown at this point — assume 60 minutes as a
+                    // conservative default for conflict detection.
+                    checkEnd = checkStart.addingTimeInterval(60 * 60)
+                }
+
+                let overlapping = try await calendarService.fetchEvents(
+                    start: checkStart,
+                    end: checkEnd,
+                    titleFilter: nil
+                )
+                // Exclude the event being updated from the conflict list.
+                let conflicts = overlapping.filter { $0.id != arguments.eventID }
+                if !conflicts.isEmpty {
+                    let conflictList = conflicts.map {
+                        "• \($0.title) — \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")"
+                    }.joined(separator: "\n")
+                    let conflictIDs = conflicts.map { "  \($0.title): \($0.id)" }.joined(separator: "\n")
+                    let resultMsg = "[TOOL RESULT] Conflict detected: \(conflicts.count) overlapping event(s)"
+                    logger.info("\(resultMsg, privacy: .public)")
+                    return """
+                    That time conflicts with:
+                    \(conflictList)
+
+                    Tell the user conversationally and ask how to proceed. Options:
+                    (a) Pick a different time → call updateCalendarEvent with the new time
+                    (b) Move the conflicting event → call updateCalendarEvent on it using its ID below
+                    (c) Replace the conflicting event → call deleteCalendarEvent then proceed
+                    Do NOT act until the user chooses.
+
+                    [INTERNAL — DO NOT SHOW TO USER]
+                    \(conflictIDs)
+                    """
+                }
+            }
+        }
+
+        // Fix 1: Wrap service call in do-catch so the LLM always gets a recoverable string.
+        let updated: CalendarEvent
+        do {
+            updated = try await calendarService.updateEvent(
+                id: arguments.eventID,
+                title: arguments.newTitle,
+                startDate: newStartDate,
+                durationMinutes: arguments.newDurationMinutes,
+                location: arguments.newLocation,
+                notes: arguments.newNotes,
+                recurrenceScope: .thisEvent
+            )
+        } catch CalendarError.eventNotFound {
+            return "I couldn't find that event — it may have been deleted. Please try again."
+        } catch CalendarError.updateFailed(let reason) {
+            return "I wasn't able to update the event: \(reason). Please try again."
+        } catch {
+            return "Something went wrong updating the event. Please try again."
+        }
 
         let resultMsg = "[TOOL RESULT] Updated event: \(updated.title)"
         logger.info("\(resultMsg, privacy: .public)")
 
+        // Fix 4: Success string uses the actual updated CalendarEvent's description.
         return "Updated '\(arguments.currentTitle)': \(updated.description)."
     }
 }

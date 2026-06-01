@@ -50,12 +50,17 @@ enum CalendarError: LocalizedError {
             return "Calendar access denied. Go to Settings → Privacy & Security → Calendars to enable full access."
         case .writeOnlyAccess:
             return "VoxiCal needs full calendar access, not just write access. Please update in Settings."
-        case .eventNotFound(let id):
-            return "Event not found (ID: \(id)). It may have already been deleted."
+        case .eventNotFound:
+            // Intentionally omit the raw event ID from the user-facing message; it is
+            // noise to the user and may be confusing. The raw ID is available via the
+            // associated value for logging at the call site if needed.
+            return "The event could not be found. It may have already been deleted or moved."
         case .createFailed(let reason):
             return "Failed to create event: \(reason)"
         case .updateFailed(let reason):
-            return "Failed to update event: \(reason)"
+            // Provide a human-readable prefix so the message makes sense on its own
+            // even if EventKit returns a technical underlying description.
+            return "Could not save your changes to the event. \(reason)"
         }
     }
 }
@@ -66,7 +71,11 @@ protocol CalendarServiceProtocol: AnyObject {
     func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent]
     func deleteEvent(id: String) async throws
     func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent
-    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent
+    /// Updates fields of an existing event. Pass nil to leave a field unchanged.
+    /// Pass an empty string for location or notes to clear those fields.
+    /// - Parameter recurrenceScope: `.thisEvent` to modify only this occurrence,
+    ///   `.futureEvents` to modify this and all following occurrences.
+    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?, recurrenceScope: EKSpan) async throws -> CalendarEvent
 }
 
 // MARK: - CalendarService
@@ -173,18 +182,35 @@ class CalendarService {
 
     /// Updates fields of an existing event. Pass nil to leave a field unchanged.
     /// Pass an empty string for location or notes to clear those fields.
-    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent {
+    ///
+    /// - Parameter recurrenceScope: Controls which occurrences of a recurring event are
+    ///   modified. Pass `.thisEvent` (the default at all call sites) to change only the
+    ///   selected occurrence, or `.futureEvents` to change this and all following ones.
+    func updateEvent(
+        id: String,
+        title: String?,
+        startDate: Date?,
+        durationMinutes: Int?,
+        location: String?,
+        notes: String?,
+        recurrenceScope: EKSpan
+    ) async throws -> CalendarEvent {
         guard let event = store.event(withIdentifier: id) else {
             throw CalendarError.eventNotFound(id: id)
         }
 
         if let title { event.title = title }
 
-        if let startDate {
+        if let newStart = startDate {
+            // Preserve the original wall-clock duration when only the start time changes.
+            // Using absolute TimeInterval arithmetic (seconds since reference date) is
+            // DST-safe: if the event crosses a DST boundary the displayed clock times will
+            // shift by the DST offset, which is the correct behaviour (the meeting is still
+            // the same number of minutes long regardless of the clock change).
             let originalDuration = event.endDate.timeIntervalSince(event.startDate)
             let duration = durationMinutes.map { Double($0) * 60 } ?? originalDuration
-            event.startDate = startDate
-            event.endDate = startDate.addingTimeInterval(duration)
+            event.startDate = newStart
+            event.endDate = newStart.addingTimeInterval(duration)
         } else if let durationMinutes {
             event.endDate = event.startDate.addingTimeInterval(Double(durationMinutes) * 60)
         }
@@ -193,7 +219,7 @@ class CalendarService {
         if let notes    { event.notes    = notes.isEmpty    ? nil : notes }
 
         do {
-            try store.save(event, span: .thisEvent, commit: true)
+            try store.save(event, span: recurrenceScope, commit: true)
         } catch {
             throw CalendarError.updateFailed(reason: error.localizedDescription)
         }
