@@ -217,11 +217,19 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Ignore all VS Code local settings
+.vscode/*
+.DS_Store
+
+# Allow specific helpful files
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
 # Plan
 plan/
 reports/
-
-.DS_Store
 
 # claude
 .claude
