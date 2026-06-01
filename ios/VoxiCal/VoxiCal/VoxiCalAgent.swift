@@ -149,16 +149,17 @@ class VoxiCalAgent {
             4. After the user responds, make exactly one follow-up tool call matching their choice.
 
         Updating events:
-        - Call updateCalendarEvent when the user wants to change an existing event.
-        - You MUST call fetchCalendarEvents in the same turn first to get the current \
-          eventID. Never use an eventID from earlier in the conversation — it may be stale.
-        - Use the startISO and endISO values already computed in the date prefix above.
-        - Only pass fields the user explicitly wants changed; omit others (nil = leave unchanged).
-        - An empty string for location or notes clears that field — use only when the user \
-          explicitly says to remove it.
-        - Confirm what will change before calling updateCalendarEvent.
-        - For relative time changes ("next hour", "next day", "next Friday"), compute the exact \
-          new date and time from today's date before calling the tool.
+        - Call updateCalendarEvent to change an existing event. \
+          Always call fetchCalendarEvents in the same turn first to get the eventID.
+        - If the user has not named a specific event, ask which event before fetching.
+        - If the user named an event but not what to change, ask what to change before fetching.
+        - If multiple events match, list them and ask which one to update before acting.
+        - If a time is given without AM/PM and context is unclear, ask before updating.
+        - Only pass fields the user explicitly asked to change (nil = keep unchanged, "" = clear).
+        - After a successful update, confirm what changed: "Moved your standup to 10am tomorrow."
+        - For recurring events, ask: "Change just this occurrence, or the whole series?"
+        - If no fetched event matches what the user described, say it was not found. \
+          Never update an event that doesn't match the user's description.
 
         Intent disambiguation:
         - "reschedule", "move", "change", "update" → updateCalendarEvent
@@ -215,18 +216,25 @@ class VoxiCalAgent {
         let today = cal.startOfDay(for: Date())
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
-        let isoToday       = f.string(from: today)
-        let isoTomorrow    = f.string(from: cal.date(byAdding: .day, value: 1,  to: today)!)
-        let iso14DaysLater = f.string(from: cal.date(byAdding: .day, value: 14, to: today)!)
+        let isoToday        = f.string(from: today)
+        let isoYesterday    = f.string(from: cal.date(byAdding: .day, value: -1, to: today)!)
+        let isoTomorrow     = f.string(from: cal.date(byAdding: .day, value: 1,  to: today)!)
+        let iso14DaysLater  = f.string(from: cal.date(byAdding: .day, value: 14, to: today)!)
+        let iso30DaysLater  = f.string(from: cal.date(byAdding: .day, value: 30, to: today)!)
+        let iso60DaysLater  = f.string(from: cal.date(byAdding: .day, value: 60, to: today)!)
         let verbose = DateFormatter.localizedString(from: Date(), dateStyle: .full, timeStyle: .none)
         let prefix = """
             Today is \(verbose). \
-            YYYY-MM-DD dates: today=\(isoToday), tomorrow=\(isoTomorrow), \
-            14-days-from-today=\(iso14DaysLater). \
+            YYYY-MM-DD dates: today=\(isoToday), yesterday=\(isoYesterday), \
+            tomorrow=\(isoTomorrow), 14-days-from-today=\(iso14DaysLater), \
+            30-days-from-today=\(iso30DaysLater), 60-days-from-today=\(iso60DaysLater). \
             When the user says "tomorrow", ALWAYS use '\(isoTomorrow)' — \
             never use a date mentioned elsewhere in the conversation. \
             When fetching to find an event to update or reschedule: \
-            use startISO='\(isoToday)' and endISO='\(iso14DaysLater)'. \
+            use startISO='\(isoToday)' and endISO='\(iso14DaysLater)' by default. \
+            For events more than 2 weeks out, extend endISO up to '\(iso60DaysLater)'. \
+            For past events (yesterday, last week), set startISO to '\(isoYesterday)' \
+            or the appropriate earlier date. \
             Do NOT use \(iso14DaysLater) as startISO.
             """
         return prefix + "\n\n" + agentInstructions

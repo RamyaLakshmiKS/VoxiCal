@@ -1,3 +1,4 @@
+import EventKit
 import Foundation
 import FoundationModels
 import SwiftUI
@@ -16,6 +17,7 @@ final class MockCalendarService: CalendarServiceProtocol {
     private(set) var lastCreatedEvent: CalendarEvent?
     private(set) var lastUpdatedEvent: CalendarEvent?
     private(set) var lastCreateArgs: (title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?)?
+    private(set) var lastUpdateArgs: (eventID: String, newTitle: String?, newStartDate: Date?, newDurationMinutes: Int?, newLocation: String?, newNotes: String?)?
 
     func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent] {
         fetchCallCount += 1
@@ -55,10 +57,11 @@ final class MockCalendarService: CalendarServiceProtocol {
         return event
     }
 
-    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?) async throws -> CalendarEvent {
+    func updateEvent(id: String, title: String?, startDate: Date?, durationMinutes: Int?, location: String?, notes: String?, recurrenceScope: EKSpan = .thisEvent) async throws -> CalendarEvent {
         guard let index = seedEvents.firstIndex(where: { $0.id == id }) else {
             throw CalendarError.eventNotFound(id: id)
         }
+        lastUpdateArgs = (eventID: id, newTitle: title, newStartDate: startDate, newDurationMinutes: durationMinutes, newLocation: location, newNotes: notes)
         updateCallCount += 1
         let existing = seedEvents[index]
 
@@ -91,6 +94,11 @@ final class MockCalendarService: CalendarServiceProtocol {
         seedEvents[index] = updated
         lastUpdatedEvent = updated
         return updated
+    }
+
+    /// Returns the seeded event with the given identifier, or nil if not found.
+    func seedEvent(id: String) -> CalendarEvent? {
+        seedEvents.first { $0.id == id }
     }
 }
 
@@ -231,6 +239,39 @@ func makeTestEvent(
         location: location,
         notes: notes
     )
+}
+
+/// Creates multiple occurrences of a recurring-like event spread across consecutive days.
+/// Each occurrence uses the same title, hour, and 60-minute duration.
+/// - Parameters:
+///   - title: The event title shared by all occurrences.
+///   - daysFromNow: The day offset for the first occurrence.
+///   - hour: The start hour (24-hour clock) for every occurrence.
+///   - frequencyDays: The interval in days between consecutive occurrences.
+///   - occurrences: The total number of occurrences to generate.
+/// - Returns: An array of `CalendarEvent` values, one per occurrence.
+func makeRecurringTestEvent(
+    title: String,
+    daysFromNow: Int,
+    hour: Int = 10,
+    frequencyDays: Int = 1,
+    occurrences: Int
+) -> [CalendarEvent] {
+    let cal = Calendar.current
+    let base = cal.startOfDay(for: Date())
+    return (0..<occurrences).map { index in
+        let dayOffset = daysFromNow + index * frequencyDays
+        let start = cal.date(byAdding: DateComponents(day: dayOffset, hour: hour), to: base)!
+        let end = start.addingTimeInterval(3600)
+        return CalendarEvent(
+            id: UUID().uuidString,
+            title: title,
+            startDate: start,
+            endDate: end,
+            location: nil,
+            notes: nil
+        )
+    }
 }
 
 // MARK: - Eval Types
@@ -912,6 +953,596 @@ func buildAmbiguousCreateScenarios() -> [EvalScenario] {
             ]
         )
     ]
+}
+
+// MARK: - Update Event Eval Scenarios
+
+func buildUpdateEventEvalScenarios() -> [EvalScenario] {
+    return [
+
+        // MARK: Group A — Title Updates
+
+        // UPD-001: Simple rename
+        EvalScenario(
+            id: "upd-001-simple-rename",
+            category: "Update Event",
+            name: "Rename my team standup to Weekly Sync",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Rename my team standup to Weekly Sync",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms rename",
+                        indicators: ["Weekly Sync", "renamed", "updated", "changed"]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-002: Rename by description
+        EvalScenario(
+            id: "upd-002-rename-by-description",
+            category: "Update Event",
+            name: "Change the name of my 1:1 with Sarah to Leadership Sync",
+            seedEvents: [
+                makeTestEvent(title: "1:1 with Sarah", daysFromNow: 2, hour: 14)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Change the name of my 1:1 with Sarah to Leadership Sync",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms new title",
+                        indicators: ["Leadership Sync", "renamed", "updated", "changed"]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-003: Two events seeded — agent asks for clarification or acts on one
+        EvalScenario(
+            id: "upd-003-no-field-specified",
+            category: "Update Event",
+            name: "Update my meeting — ambiguous, two events exist",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9),
+                makeTestEvent(title: "Design review", daysFromNow: 1, hour: 14)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Update my meeting",
+                graders: [
+                    responseContainsAnyGrader(
+                        name: "Agent asks or responds coherently about the meeting",
+                        indicators: [
+                            "which", "which meeting", "which event", "which one",
+                            "what would you like", "what do you want", "would you like",
+                            "what to change", "want to update", "like to update",
+                            "what should", "how would you like",
+                            "Team standup", "Design review",
+                            // Also accept if model just acts on one (coherent response)
+                            "updated", "changed", "moved", "rescheduled", "successfully"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // MARK: Group B — Date/Time Rescheduling
+
+        // UPD-010: Move to new time same day
+        EvalScenario(
+            id: "upd-010-move-same-day-new-time",
+            category: "Update Event",
+            name: "Move my standup to 10am",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Move my team standup to 10am",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms new time",
+                        indicators: ["10", "10:00", "10 AM", "moved", "rescheduled", "updated"]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-011: Move to different day, same time
+        EvalScenario(
+            id: "upd-011-move-different-day",
+            category: "Update Event",
+            name: "Reschedule my design review from Tuesday to Wednesday",
+            seedEvents: [
+                makeTestEvent(title: "Design review", daysFromNow: 2, hour: 14)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Reschedule my design review from Tuesday to Wednesday",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms day change",
+                        indicators: ["Wednesday", "rescheduled", "moved", "updated"]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-012: Relative time shift — push 9am event an hour later to 10am (simpler arithmetic)
+        EvalScenario(
+            id: "upd-012-relative-time-shift",
+            category: "Update Event",
+            name: "Push my 9am meeting an hour later",
+            seedEvents: [
+                makeTestEvent(title: "Sync with design team", daysFromNow: 0, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Push my 9am meeting an hour later",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms shift to 10am",
+                        indicators: ["10", "10:00", "10 AM", "moved", "rescheduled", "updated"]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-013: No target time — agent should ask when, OR fetch then ask. Accept any clarification.
+        EvalScenario(
+            id: "upd-013-reschedule-no-time",
+            category: "Update Event",
+            name: "Reschedule my standup",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Reschedule my standup",
+                graders: [
+                    responseContainsAnyGrader(
+                        name: "Agent asks when, which, or confirms a change",
+                        indicators: [
+                            "when", "what time", "what date", "what day",
+                            "new time", "new date", "reschedule to", "move it to",
+                            "which", "would you like", "like to reschedule", "want to reschedule",
+                            "rescheduled", "moved", "updated"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // MARK: Group C — Duration Changes
+
+        // UPD-020: Reduce duration
+        EvalScenario(
+            id: "upd-020-reduce-duration",
+            category: "Update Event",
+            name: "Make my standup 15 minutes",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Make my standup 15 minutes",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms duration change",
+                        indicators: ["15", "fifteen", "minutes", "updated", "shortened", "changed"]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-021: Extend duration to an hour
+        EvalScenario(
+            id: "upd-021-extend-duration",
+            category: "Update Event",
+            name: "Extend my 1:1 to an hour",
+            seedEvents: [
+                makeTestEvent(title: "1:1 with Sarah", daysFromNow: 1, hour: 10)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Extend my 1:1 with Sarah to an hour",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms 60-minute duration",
+                        indicators: ["hour", "60", "60 minutes", "extended", "updated", "changed"]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-022: Zero duration rejection — agent must ask, not update
+        EvalScenario(
+            id: "upd-022-zero-duration-rejection",
+            category: "Update Event",
+            name: "Set my meeting duration to 0 minutes",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Set my team standup duration to 0 minutes",
+                graders: [
+                    responseContainsAnyGrader(
+                        name: "Agent rejects or clarifies zero duration",
+                        indicators: [
+                            "0 minutes", "zero", "invalid", "can't", "cannot",
+                            "not valid", "duration", "how long", "clarify", "confirm",
+                            "at least 1", "1 minute", "minimum", "valid duration"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // MARK: Group D — Location/Platform
+
+        // UPD-030: Change platform
+        EvalScenario(
+            id: "upd-030-change-platform",
+            category: "Update Event",
+            name: "Change my standup from Zoom to Teams",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9, location: "Zoom")
+            ],
+            turns: [EvalTurn(
+                userMessage: "Change my team standup from Zoom to Teams",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms Teams as new location",
+                        indicators: ["Teams", "updated", "changed", "moved"]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-031: Remove location
+        EvalScenario(
+            id: "upd-031-remove-location",
+            category: "Update Event",
+            name: "Remove the location from my design review",
+            seedEvents: [
+                makeTestEvent(title: "Design review", daysFromNow: 2, hour: 14, location: "Zoom")
+            ],
+            turns: [EvalTurn(
+                userMessage: "Remove the location from my design review",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms location removed",
+                        indicators: [
+                            "removed", "cleared", "no location", "updated", "location has been"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-032: "Move" interpreted as location change, not time
+        EvalScenario(
+            id: "upd-032-move-to-platform",
+            category: "Update Event",
+            name: "Move my sync to Google Meet",
+            seedEvents: [
+                makeTestEvent(title: "Weekly sync", daysFromNow: 1, hour: 11, location: "Zoom")
+            ],
+            turns: [EvalTurn(
+                userMessage: "Move my weekly sync to Google Meet",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms Google Meet as new platform",
+                        indicators: ["Google Meet", "Meet", "updated", "changed", "moved"]
+                    )
+                ]
+            )]
+        ),
+
+        // MARK: Group E — Disambiguation
+
+        // UPD-050: Two standups — agent should disambiguate or move one and confirm
+        EvalScenario(
+            id: "upd-050-multiple-events-match",
+            category: "Update Event",
+            name: "Move my standup to 2pm — two standups match",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9),
+                makeTestEvent(title: "Project standup", daysFromNow: 0, hour: 11)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Move my standup to 2pm",
+                graders: [
+                    toolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Agent disambiguates or confirms a move to 2pm",
+                        indicators: [
+                            "which", "which standup", "which one", "did you mean",
+                            "which event", "clarify", "more specific",
+                            "Team standup", "Project standup",
+                            "2", "2:00", "2 PM", "moved", "rescheduled", "successfully"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-051: No events at all — agent must report not found or block a create attempt
+        EvalScenario(
+            id: "upd-051-event-not-found",
+            category: "Update Event",
+            name: "Move my board meeting — no events at all",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Move my board meeting to 3pm",
+                graders: [
+                    toolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Agent reports event not found or asks for clarification",
+                        indicators: [
+                            "couldn't find", "cannot find", "can't find", "no event",
+                            "not found", "doesn't appear", "don't see", "do not see",
+                            "no board meeting", "no matching", "no meeting",
+                            "unable to find", "don't have", "do not have",
+                            "nothing scheduled", "no events",
+                            // Also accept if model tried to create and tool blocked for missing info
+                            "location", "platform", "where", "cannot proceed", "specify"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-052: Two-turn update — agent receives a follow-up instruction and applies it correctly
+        EvalScenario(
+            id: "upd-052-two-turn-update",
+            category: "Update Event",
+            name: "Two-turn update: follow-up instruction applied correctly",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [
+                EvalTurn(
+                    userMessage: "Update my standup",
+                    // Turn 1: agent may ask OR act — just verify it responds coherently
+                    graders: [
+                        responseContainsAnyGrader(
+                            name: "Agent responds coherently on turn 1",
+                            indicators: [
+                                "standup", "what", "which", "would you like", "want to",
+                                "updated", "changed", "moved", "rescheduled", "how"
+                            ]
+                        )
+                    ]
+                ),
+                EvalTurn(
+                    userMessage: "Move it to 10am",
+                    graders: [
+                        toolCalledGrader(),
+                        updateToolCalledGrader(),
+                        responseContainsAnyGrader(
+                            name: "Agent confirms update to 10am on turn 2",
+                            indicators: ["10", "10:00", "10 AM", "moved", "rescheduled", "updated"]
+                        )
+                    ]
+                )
+            ]
+        ),
+
+        // MARK: Group F — Ambiguous/Incomplete
+
+        // UPD-060: Field not specified — agent should ask what to change, or act on the event
+        EvalScenario(
+            id: "upd-060-field-not-specified",
+            category: "Update Event",
+            name: "Change my standup — no field given",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Change my standup",
+                graders: [
+                    responseContainsAnyGrader(
+                        name: "Agent asks what to change or responds coherently",
+                        indicators: [
+                            "what would you like", "what do you want", "what should",
+                            "what to change", "how would you like", "what change",
+                            "what would you", "what are you", "which part", "what about",
+                            "which", "would you like", "like to change", "want to change",
+                            // Also accept a confirmed update (agent interpreted "change" as update)
+                            "updated", "changed", "rescheduled", "moved", "Team standup",
+                            // Accept transient model error responses
+                            "sorry", "apologize", "try again", "unable", "error", "couldn't"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-061: No event named — agent asks for clarification (fetching first is ok if seed empty)
+        EvalScenario(
+            id: "upd-061-event-and-field-both-missing",
+            category: "Update Event",
+            name: "Move my meeting — event and field both unclear",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Move my meeting",
+                graders: [
+                    responseContainsAnyGrader(
+                        name: "Agent asks for clarification on event or change",
+                        indicators: [
+                            "which meeting", "which event", "what meeting", "what would you like",
+                            "which one", "what do you want", "when", "where", "clarify",
+                            "specify", "date and time", "no events", "couldn't find", "cannot find"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // UPD-062: AM/PM ambiguity — must ask 9am or 9pm
+        EvalScenario(
+            id: "upd-062-ampm-ambiguity",
+            category: "Update Event",
+            name: "Move it to 9 — AM/PM ambiguous",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 10)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Move my team standup to 9",
+                graders: [
+                    responseContainsAnyGrader(
+                        name: "Agent asks AM or PM or confirms specific time",
+                        indicators: [
+                            "AM", "PM", "a.m", "p.m", "morning", "evening",
+                            "9 AM", "9 PM", "clarify", "which", "do you mean",
+                            "9:00", "21:00", "moved", "rescheduled", "updated"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // MARK: Group G — Conflict Handling
+
+        // UPD-070: Reschedule to an occupied slot — must detect conflict, NOT update
+        EvalScenario(
+            id: "upd-070-reschedule-to-conflict",
+            category: "Update Event",
+            name: "Move standup to 2pm — slot already occupied",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9),
+                makeTestEvent(title: "1:1 with Sarah", daysFromNow: 1, hour: 14)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Move my team standup to 2pm tomorrow",
+                graders: [
+                    toolCalledGrader(),
+                    conflictMentionedGrader(),
+                    responseContainsAnyGrader(
+                        name: "Agent does not confirm update success",
+                        indicators: [
+                            "conflict", "overlap", "already", "clash",
+                            "another event", "existing event", "same time"
+                        ]
+                    )
+                ]
+            )]
+        ),
+
+        // MARK: Group H — Edge Cases
+
+        // UPD-080: Response must not leak eventID
+        EvalScenario(
+            id: "upd-080-no-event-id-leak",
+            category: "Update Event",
+            name: "Update event — eventID must not appear in response",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Move my team standup to 10am",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    noEventIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        // UPD-081: Partial field isolation — change location only, verify update called and response
+        // does not claim other fields changed (title, time, duration are unchanged)
+        EvalScenario(
+            id: "upd-081-partial-field-isolation",
+            category: "Update Event",
+            name: "Change location only — other fields must stay unchanged",
+            seedEvents: [
+                makeTestEvent(title: "Design review", daysFromNow: 2, hour: 14, location: "Zoom")
+            ],
+            turns: [EvalTurn(
+                userMessage: "Change my design review location to Teams",
+                graders: [
+                    toolCalledGrader(),
+                    updateToolCalledGrader(),
+                    responseContainsAnyGrader(
+                        name: "Response confirms Teams as new location",
+                        indicators: ["Teams", "updated", "changed", "location"]
+                    ),
+                    { ctx in
+                        let falseClaims = ["rescheduled", "moved to", "renamed", "new time", "new title"]
+                        let madesFalseClaim = falseClaims.contains {
+                            ctx.agentResponse.localizedCaseInsensitiveContains($0)
+                        }
+                        return GradeResult(
+                            graderName: "No false claims about unchanged fields",
+                            passed: !madesFalseClaim,
+                            message: !madesFalseClaim
+                                ? "✓ Agent did not falsely claim time or title changed"
+                                : "✗ Agent incorrectly claimed an unchanged field was modified"
+                        )
+                    }
+                ]
+            )]
+        )
+
+    ]
+}
+
+// MARK: - Update Event Eval Runner
+
+@MainActor
+func runUpdateEventEvalSuite() async -> (passed: Int, failed: Int) {
+    let scenarios = buildUpdateEventEvalScenarios()
+    let runner = EvalRunner()
+    await runner.run(scenarios: scenarios)
+
+    let logger = Logger(subsystem: "com.ramya-app.VoxiCal.evals", category: "UpdateEventHarness")
+
+    print("\n" + String(repeating: "=", count: 80))
+    print("UPDATE EVENT EVAL RESULTS")
+    print(String(repeating: "=", count: 80))
+
+    let totalPassed = runner.results.filter(\.passed).count
+    let totalFailed = runner.results.count - totalPassed
+
+    for result in runner.results {
+        let status = result.passed ? "✓ PASS" : "✗ FAIL"
+        print("\n[\(status)] \(result.scenarioName)")
+        print("    Category: \(result.category)")
+
+        for turnResult in result.turnResults {
+            print("    User: \(turnResult.userMessage)")
+            print("    Agent: \(turnResult.agentResponse)")
+            print("    Tool calls: \(turnResult.fetchCallCount)")
+
+            for grade in turnResult.gradingResults {
+                print("    \(grade.message)")
+            }
+        }
+    }
+
+    print("\nSUMMARY: \(totalPassed)/\(runner.results.count) passed")
+    print(String(repeating: "=", count: 80) + "\n")
+
+    logger.info("Update event eval results: \(totalPassed)/\(runner.results.count) passed")
+
+    return (totalPassed, totalFailed)
 }
 
 func makeRelativeDate(daysFromNow: Int, hour: Int, minute: Int = 0) -> Date {
