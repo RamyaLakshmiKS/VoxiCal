@@ -182,9 +182,39 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
     let calendarService: any CalendarServiceProtocol
 
     func call(arguments: Arguments) async throws -> String {
+        // Validate presence of required fields before attempting to create.
+        if arguments.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            logger.info("[TOOL: createCalendarEvent] blocked — title missing")
+            return "Event title not specified. Ask the user for a clear title before calling this tool."
+        }
+
+        if arguments.startISO.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            logger.info("[TOOL: createCalendarEvent] blocked — startISO missing")
+            return "Start date and time not specified. Ask the user for the date and time (e.g., 2026-06-01T15:00) before calling this tool."
+        }
+
+        // Detect obviously vague time phrases that are not ISO-like and require clarification.
+        let lowerStart = arguments.startISO.lowercased()
+        let vagueTimeIndicators = ["morning", "afternoon", "evening", "around", "later", "after lunch", "before lunch", "tonight", "this afternoon"]
+        if vagueTimeIndicators.contains(where: { lowerStart.contains($0) }) {
+            logger.info("[TOOL: createCalendarEvent] blocked — vague start time: \(arguments.startISO)")
+            return "The time provided is vague. Ask the user for a specific start time (e.g., 2026-06-01T15:00) before creating the event."
+        }
+
         guard let durationMinutes = arguments.durationMinutes else {
             logger.info("[TOOL: createCalendarEvent] blocked — duration missing")
             return "Duration not specified. Ask the user how long the event should be (in minutes) before calling this tool again."
+        }
+
+        // Location is required unless the user explicitly said there is none — treat empty/whitespace as missing.
+        if let loc = arguments.location {
+            if loc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                logger.info("[TOOL: createCalendarEvent] blocked — location empty string (treated as missing)")
+                return "Location or platform not specified. Ask the user where the meeting will take place (e.g., Zoom, Conference Room A) before calling this tool."
+            }
+        } else {
+            logger.info("[TOOL: createCalendarEvent] blocked — location missing")
+            return "Location or platform not specified. Ask the user where the meeting will take place (e.g., Zoom, Conference Room A) before calling this tool."
         }
 
         let toolMsg = "[TOOL: createCalendarEvent] title=\(arguments.title), start=\(arguments.startISO), duration=\(durationMinutes)min"
