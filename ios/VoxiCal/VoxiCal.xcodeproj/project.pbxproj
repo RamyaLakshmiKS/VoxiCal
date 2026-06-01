@@ -15,16 +15,6 @@
 		E1A2B3C4D5E6000022BB0016 /* CalendarEvals.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0006 /* CalendarEvals.swift */; };
 /* End PBXBuildFile section */
 
-/* Begin PBXContainerItemProxy section */
-		E1A2B3C4D5E6000011AA0009 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 2DFD9DE92FC9603C00883BD2 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 2DFD9DF02FC9603C00883BD2;
-			remoteInfo = VoxiCal;
-		};
-/* End PBXContainerItemProxy section */
-
 /* Begin PBXFileReference section */
 		2DFD9DF12FC9603C00883BD2 /* VoxiCal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoxiCal.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E1A2B3C4D5E6000011AA0001 /* VoxiCalTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VoxiCalTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -33,7 +23,7 @@
 		E1A2B3C4D5E6000022BB0003 /* VoxiCalAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VoxiCalAgent.swift; path = VoxiCal/VoxiCalAgent.swift; sourceTree = SOURCE_ROOT; };
 		E1A2B3C4D5E6000022BB0004 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SpeechService.swift; path = VoxiCal/SpeechService.swift; sourceTree = SOURCE_ROOT; };
 		E1A2B3C4D5E6000022BB0005 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TTSService.swift; path = VoxiCal/TTSService.swift; sourceTree = SOURCE_ROOT; };
-		E1A2B3C4D5E6000022BB0006 /* CalendarEvals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CalendarEvals.swift; path = VoxiCal/Evals/CalendarEvals.swift; sourceTree = SOURCE_ROOT; };
+		E1A2B3C4D5E6000022BB0006 /* CalendarEvals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CalendarEvals.swift; path = evaluation/CalendarEvals.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -44,7 +34,7 @@
 		};
 		E1A2B3C4D5E6000011AA0002 /* VoxiCalTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = VoxiCalTests;
+			path = tests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -67,12 +57,26 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		2D3C2EFB2FCD0C7300B10D00 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				E1A2B3C4D5E6000022BB0001 /* CalendarService.swift */,
+				E1A2B3C4D5E6000022BB0002 /* CalendarTool.swift */,
+				E1A2B3C4D5E6000022BB0003 /* VoxiCalAgent.swift */,
+				E1A2B3C4D5E6000022BB0004 /* SpeechService.swift */,
+				E1A2B3C4D5E6000022BB0005 /* TTSService.swift */,
+				E1A2B3C4D5E6000022BB0006 /* CalendarEvals.swift */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
 		2DFD9DE82FC9603C00883BD2 = {
 			isa = PBXGroup;
 			children = (
 				2DFD9DF32FC9603C00883BD2 /* VoxiCal */,
 				E1A2B3C4D5E6000011AA0002 /* VoxiCalTests */,
 				2DFD9DF22FC9603C00883BD2 /* Products */,
+				2D3C2EFB2FCD0C7300B10D00 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
