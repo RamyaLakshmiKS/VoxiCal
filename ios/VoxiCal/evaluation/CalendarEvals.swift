@@ -596,6 +596,13 @@ func createPromptAskForSpecificTimeGrader() -> Grader {
     )
 }
 
+func createPromptAskForTitleGrader() -> Grader {
+    responseContainsAnyGrader(
+        name: "Asked for event title or name",
+        indicators: ["title", "name", "call it", "what should", "name the event", "event name", "what to call", "what would you like to call", "what do you want to call"]
+    )
+}
+
 // MARK: - EvalRunner
 
 @MainActor
@@ -841,6 +848,65 @@ func buildAmbiguousCreateScenarios() -> [EvalScenario] {
                             expectedLocation: "Zoom",
                             expectedNotes: nil
                         )
+                    ]
+                )
+            ]
+        ),
+
+        // Missing title: all other details present but event name is generic ("a call")
+        EvalScenario(
+            id: "clarify-missing-title",
+            category: "Ambiguous Create",
+            name: "Schedule a call tomorrow at 2pm for 30 minutes on Zoom",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Schedule a call tomorrow at 2pm for 30 minutes on Zoom",
+                graders: [
+                    noActionToolCallsThisTurnGrader(),
+                    createClarificationGrader(),
+                    createPromptAskForTitleGrader()
+                ]
+            )]
+        ),
+
+        // Fully generic request: no title, date, time, duration, or location
+        EvalScenario(
+            id: "clarify-generic-request",
+            category: "Ambiguous Create",
+            name: "I need to set up a meeting",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "I need to set up a meeting",
+                graders: [
+                    noActionToolCallsThisTurnGrader(),
+                    createClarificationGrader(),
+                    createPromptAskForTitleGrader(),
+                    createPromptAskForDateTimeGrader(),
+                    createPromptAskForDurationGrader(),
+                    createPromptAskForLocationGrader()
+                ]
+            )]
+        ),
+
+        // Multi-turn: title asked on turn 1, provided on turn 2, event created
+        EvalScenario(
+            id: "clarify-missing-title-context-followup",
+            category: "Ambiguous Create",
+            name: "Missing title resolved across two turns",
+            seedEvents: [],
+            turns: [
+                EvalTurn(
+                    userMessage: "Schedule a call tomorrow at 2pm for 30 minutes on Zoom",
+                    graders: [
+                        noActionToolCallsThisTurnGrader(),
+                        createClarificationGrader(),
+                        createPromptAskForTitleGrader()
+                    ]
+                ),
+                EvalTurn(
+                    userMessage: "Call it Design Review",
+                    graders: [
+                        createToolCalledGrader()
                     ]
                 )
             ]
