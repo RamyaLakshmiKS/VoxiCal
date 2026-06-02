@@ -16,18 +16,19 @@ final class MockCalendarService: CalendarServiceProtocol {
     private(set) var lastCreatedEvent: CalendarEvent?
     private(set) var lastUpdatedEvent: CalendarEvent?
     private(set) var lastCreateArgs: (title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?)?
+    private(set) var fetchArgsHistory: [(start: Date, end: Date, titleFilter: String?)] = []
 
     func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent] {
         fetchCallCount += 1
         lastFetchArgs = (start, end, titleFilter)
+        fetchArgsHistory.append((start, end, titleFilter))
 
         let result = seedEvents
             .filter { event in
                 guard event.startDate < end && event.endDate > start else { return false }
                 guard let filter = titleFilter, !filter.isEmpty else { return true }
-                let inTitle = event.title.localizedCaseInsensitiveContains(filter)
-                let inNotes = event.notes?.localizedCaseInsensitiveContains(filter) ?? false
-                return inTitle || inNotes
+                // Title-only match — aligned with real CalendarService behavior
+                return event.title.localizedCaseInsensitiveContains(filter)
             }
             .sorted { $0.startDate < $1.startDate }
 
@@ -48,7 +49,8 @@ final class MockCalendarService: CalendarServiceProtocol {
             startDate: startDate,
             endDate: startDate.addingTimeInterval(Double(durationMinutes) * 60),
             location: location,
-            notes: notes
+            notes: notes,
+            isAllDay: false
         )
         seedEvents.append(event)
         lastCreatedEvent = event
@@ -87,7 +89,7 @@ final class MockCalendarService: CalendarServiceProtocol {
         if let notes { newNotes = notes.isEmpty ? nil : notes }
         else { newNotes = existing.notes }
 
-        let updated = CalendarEvent(id: id, title: newTitle, startDate: newStart, endDate: newEnd, location: newLocation, notes: newNotes)
+        let updated = CalendarEvent(id: id, title: newTitle, startDate: newStart, endDate: newEnd, location: newLocation, notes: newNotes, isAllDay: existing.isAllDay)
         seedEvents[index] = updated
         lastUpdatedEvent = updated
         return updated
@@ -216,20 +218,31 @@ func makeTestEvent(
     title: String,
     daysFromNow: Int,
     hour: Int = 10,
+    durationMinutes: Int = 60,
     notes: String? = nil,
-    location: String? = nil
+    location: String? = nil,
+    isAllDay: Bool = false
 ) -> CalendarEvent {
     let cal = Calendar.current
     let base = cal.startOfDay(for: Date())
-    let start = cal.date(byAdding: DateComponents(day: daysFromNow, hour: hour), to: base)!
-    let end   = start.addingTimeInterval(3600)
+    let dayBase = cal.date(byAdding: .day, value: daysFromNow, to: base)!
+    let start: Date
+    let end: Date
+    if isAllDay {
+        start = cal.startOfDay(for: dayBase)
+        end   = cal.date(byAdding: .day, value: 1, to: start)!
+    } else {
+        start = cal.date(byAdding: .hour, value: hour, to: cal.startOfDay(for: dayBase))!
+        end   = start.addingTimeInterval(Double(durationMinutes) * 60)
+    }
     return CalendarEvent(
         id: UUID().uuidString,
         title: title,
         startDate: start,
         endDate: end,
         location: location,
-        notes: notes
+        notes: notes,
+        isAllDay: isAllDay
     )
 }
 
@@ -247,6 +260,8 @@ struct EvalContext {
     let turnUpdateCallCount: Int
     let lastCreatedEvent: CalendarEvent?
     let lastCreateArgs: (title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?)?
+    let lastFetchArgs: (start: Date, end: Date, titleFilter: String?)?
+    let fetchArgsHistory: [(start: Date, end: Date, titleFilter: String?)]
 }
 
 struct GradeResult: Identifiable {
@@ -603,6 +618,197 @@ func createPromptAskForTitleGrader() -> Grader {
     )
 }
 
+func titleFilterUsedGrader(expectedFilter: String) -> Grader {
+    { ctx in
+        guard let args = ctx.lastFetchArgs else {
+            return GradeResult(graderName: "titleFilter used: \(expectedFilter)", passed: false,
+                message: "✗ fetchCalendarEvents was never called — cannot check titleFilter")
+        }
+        guard let filter = args.titleFilter else {
+            return GradeResult(graderName: "titleFilter used: \(expectedFilter)", passed: false,
+                message: "✗ Called without titleFilter — expected filter='\(expectedFilter)'")
+        }
+        let ok = filter.localizedCaseInsensitiveContains(expectedFilter)
+        return GradeResult(graderName: "titleFilter used: \(expectedFilter)", passed: ok,
+            message: ok ? "✓ Called with titleFilter='\(filter)'"
+                       : "✗ titleFilter was '\(filter)' — expected to contain '\(expectedFilter)'")
+    }
+}
+
+func noTitleFilterUsedGrader() -> Grader {
+    { ctx in
+        guard let args = ctx.lastFetchArgs else {
+            return GradeResult(graderName: "No titleFilter on broad query", passed: false,
+                message: "✗ fetchCalendarEvents was never called")
+        }
+        let usedFilter = args.titleFilter.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+        return GradeResult(graderName: "No titleFilter on broad query", passed: !usedFilter,
+            message: !usedFilter
+                ? "✓ Called without titleFilter — correct for a broad schedule query"
+                : "✗ Used titleFilter='\(args.titleFilter!)' on a broad query — misses events not named with that word")
+    }
+}
+
+func singleFetchCallThisTurnGrader() -> Grader {
+    { ctx in
+        let ok = ctx.turnFetchCallCount == 1
+        return GradeResult(graderName: "Single fetch call this turn", passed: ok,
+            message: ok ? "✓ fetchCalendarEvents called exactly once this turn"
+                : ctx.turnFetchCallCount == 0
+                    ? "✗ Not called this turn — expected exactly 1 call"
+                    : "✗ Called \(ctx.turnFetchCallCount) times — must use a single call for the full date range")
+    }
+}
+
+func fetchedForCorrectDayGrader(expectedDate: Date) -> Grader {
+    { ctx in
+        guard let args = ctx.lastFetchArgs else {
+            return GradeResult(graderName: "Fetched correct day", passed: false,
+                message: "✗ fetchCalendarEvents was never called")
+        }
+        let cal = Calendar.current
+        // Only verify start date — end date varies based on whether the agent treats endISO as inclusive or adds a day.
+        let startOk = cal.isDate(args.start, inSameDayAs: expectedDate)
+        let df = DateFormatter(); df.dateFormat = "EEE, MMM d yyyy"
+        return GradeResult(graderName: "Fetched correct day", passed: startOk,
+            message: startOk ? "✓ Fetched correct day: \(df.string(from: expectedDate))"
+                             : "✗ Wrong start date: fetched=\(df.string(from: args.start)), expected=\(df.string(from: expectedDate))")
+    }
+}
+
+func noFetchPositiveClaimGrader() -> Grader {
+    { ctx in
+        guard ctx.turnFetchCallCount == 0 else {
+            return GradeResult(graderName: "No hallucination without fetch", passed: true,
+                message: "✓ Agent fetched before answering — not a hallucination risk")
+        }
+        let positiveClaims = ["you have", "you've got", "there is a", "there's a",
+            "i see", "i found", "you're scheduled", "you are scheduled",
+            "your meeting", "your appointment", "your event", "yes, you"]
+        let madePositiveClaim = positiveClaims.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
+        return GradeResult(graderName: "No hallucination without fetch", passed: !madePositiveClaim,
+            message: !madePositiveClaim
+                ? "✓ Agent did not assert event existence without fetching calendar data"
+                : "✗ Agent made a positive event claim without calling fetchCalendarEvents — potential hallucination")
+    }
+}
+
+func personNameInFetchFilterGrader(personName: String) -> Grader {
+    { ctx in
+        guard ctx.turnFetchCallCount > 0 else {
+            return GradeResult(graderName: "Person name in titleFilter: \(personName)", passed: false,
+                message: "✗ fetchCalendarEvents not called — expected a fetch with titleFilter='\(personName)'")
+        }
+        guard let args = ctx.lastFetchArgs else {
+            return GradeResult(graderName: "Person name in titleFilter: \(personName)", passed: false,
+                message: "✗ No fetch args captured")
+        }
+        let filterUsed = args.titleFilter?.localizedCaseInsensitiveContains(personName) == true
+        return GradeResult(graderName: "Person name in titleFilter: \(personName)", passed: filterUsed,
+            message: filterUsed
+                ? "✓ Used titleFilter='\(args.titleFilter!)' for '\(personName)' query"
+                : "✗ Did not use '\(personName)' as titleFilter (got: \(args.titleFilter ?? "nil")) — unfiltered fetch may cause false positives")
+    }
+}
+
+func noMarkdownInResponseGrader() -> Grader {
+    { ctx in
+        let r = ctx.agentResponse
+        let hasBullets   = r.contains("• ") || r.contains("- ") || r.contains("* ")
+        let hasBold      = r.range(of: #"\*\*[^*]+\*\*"#, options: .regularExpression) != nil
+        let hasHeaders   = r.range(of: #"\n#{1,3}\s"#, options: .regularExpression) != nil
+        let hasNumbered  = r.range(of: #"\n\d+\.\s"#, options: .regularExpression) != nil
+        let hasMarkdown  = hasBullets || hasBold || hasHeaders || hasNumbered
+        return GradeResult(graderName: "No markdown in voice response", passed: !hasMarkdown,
+            message: !hasMarkdown
+                ? "✓ Response uses plain conversational text suitable for TTS"
+                : "✗ Response contains markdown (bullets=\(hasBullets), bold=\(hasBold), headers=\(hasHeaders), numbered=\(hasNumbered)) — sounds broken when read aloud")
+    }
+}
+
+func noUUIDInResponseGrader() -> Grader {
+    { ctx in
+        let uuidPattern    = #"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"#
+        let longHexPattern = #"[0-9A-Fa-f]{16,}"#
+        let hasUUID        = ctx.agentResponse.range(of: uuidPattern, options: .regularExpression) != nil
+        let hasLongHex     = ctx.agentResponse.range(of: longHexPattern, options: .regularExpression) != nil
+        let hasMarkers     = ctx.agentResponse.contains("INTERNAL")
+                          || ctx.agentResponse.contains("[eventID:")
+                          || ctx.agentResponse.contains("Event ID:")
+                          || ctx.agentResponse.contains("eventID")
+        let exposed = hasUUID || hasLongHex || hasMarkers
+        return GradeResult(graderName: "No UUID or eventID in response", passed: !exposed,
+            message: !exposed
+                ? "✓ No raw event IDs or internal markers in user-facing response"
+                : "✗ Response contains UUID/hex/INTERNAL marker (uuid=\(hasUUID), longHex=\(hasLongHex), marker=\(hasMarkers)) — eventID leaked to user")
+    }
+}
+
+func nothingScheduledNotDontKnowGrader() -> Grader {
+    { ctx in
+        let emptyIndicators = ["nothing scheduled", "no events", "no meetings", "no appointments",
+            "nothing on", "nothing coming up", "calendar is empty",
+            "don't have anything", "do not have anything", "you're free", "you are free",
+            "couldn't find", "cannot find", "can't find", "didn't find", "don't see"]
+        let uncertaintyIndicators = ["i'm not sure", "i don't know", "i cannot determine",
+            "i can't tell", "not certain", "unclear", "not able to"]
+        let expressesDontKnow = uncertaintyIndicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
+        if expressesDontKnow {
+            return GradeResult(graderName: "Empty calendar: state fact not uncertainty", passed: false,
+                message: "✗ Agent said 'I don't know' — should state 'nothing scheduled' as a fact when tool confirms empty")
+        }
+        let statesEmpty = emptyIndicators.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
+        return GradeResult(graderName: "Empty calendar: state fact not uncertainty", passed: statesEmpty,
+            message: statesEmpty ? "✓ Agent correctly reported no scheduled events"
+                                 : "✗ Agent did not clearly state calendar is empty for the requested period")
+    }
+}
+
+func eventTitleMentionedByNameGrader(expectedTitle: String) -> Grader {
+    { ctx in
+        let response = ctx.agentResponse.lowercased()
+        let titleLower = expectedTitle.lowercased()
+        if response.contains(titleLower) {
+            return GradeResult(graderName: "Event title mentioned: \(expectedTitle)", passed: true,
+                message: "✓ Agent mentioned '\(expectedTitle)' in response")
+        }
+        let words = titleLower.split(separator: " ").map(String.init).filter { $0.count > 3 }
+        let anyWordMatch = words.contains { response.contains($0) }
+        return GradeResult(graderName: "Event title mentioned: \(expectedTitle)", passed: anyWordMatch,
+            message: anyWordMatch
+                ? "✓ Agent mentioned key words from '\(expectedTitle)'"
+                : "✗ Agent did not mention '\(expectedTitle)' or any keyword from it")
+    }
+}
+
+func eventCountMatchesGrader(expectedCount: Int) -> Grader {
+    { ctx in
+        let actual = ctx.lastFetchResult.count
+        let ok = actual == expectedCount
+        return GradeResult(graderName: "Fetch returned expected event count", passed: ok,
+            message: ok ? "✓ Tool returned exactly \(expectedCount) event(s) as expected"
+                       : "✗ Tool returned \(actual) event(s) — expected \(expectedCount). Wrong date range or titleFilter may have over/under-filtered.")
+    }
+}
+
+func refetchOnNewDayQueryGrader() -> Grader {
+    { ctx in
+        let ok = ctx.turnFetchCallCount >= 1
+        return GradeResult(graderName: "Re-fetched for new day query", passed: ok,
+            message: ok ? "✓ Agent called fetchCalendarEvents again for the new date (\(ctx.turnFetchCallCount) call(s) this turn)"
+                       : "✗ Agent answered a new-day follow-up without fetching — may be reusing stale context")
+    }
+}
+
+func nonCalendarQueryNoFetchGrader() -> Grader {
+    { ctx in
+        let ok = ctx.turnFetchCallCount == 0
+        return GradeResult(graderName: "No calendar fetch for non-calendar query", passed: ok,
+            message: ok ? "✓ Agent correctly skipped calendar fetch for a non-calendar query"
+                       : "✗ Agent called fetchCalendarEvents \(ctx.turnFetchCallCount) time(s) for a query that does not require calendar access")
+    }
+}
+
 // MARK: - EvalRunner
 
 @MainActor
@@ -611,6 +817,7 @@ final class EvalRunner {
     var results: [EvalResult] = []
     var isRunning = false
     var progress: Double = 0
+    var fetchOnly: Bool = false
 
     func run(scenarios: [EvalScenario]) async {
         guard !isRunning else { return }
@@ -632,12 +839,16 @@ final class EvalRunner {
         let mock = MockCalendarService()
         mock.seedEvents = scenario.seedEvents
 
-        let tools: [any Tool] = [
-            FetchCalendarEventsTool(calendarService: mock),
-            DeleteCalendarEventTool(calendarService: mock),
-            CreateCalendarEventTool(calendarService: mock),
-            UpdateCalendarEventTool(calendarService: mock)
-        ]
+        // Read-only scenarios only need the fetch tool — omitting Create/Update saves ~800 tokens
+        // of tool schema context, preventing context window overflow on longer read queries.
+        let tools: [any Tool] = fetchOnly
+            ? [FetchCalendarEventsTool(calendarService: mock)]
+            : [
+                FetchCalendarEventsTool(calendarService: mock),
+                DeleteCalendarEventTool(calendarService: mock),
+                CreateCalendarEventTool(calendarService: mock),
+                UpdateCalendarEventTool(calendarService: mock)
+              ]
 
         let instructions = VoxiCalAgent.buildInstructions()
 
@@ -654,12 +865,22 @@ final class EvalRunner {
             let previousUpdateCount = mock.updateCallCount
 
             let agentResponse: String
-            do {
-                let response = try await session.respond(to: turn.userMessage)
-                agentResponse = response.content
-            } catch {
-                agentResponse = "[ERROR: \(error.localizedDescription)]"
+            var lastError: Error?
+            var responseContent: String?
+            for attempt in 1...3 {
+                do {
+                    let response = try await session.respond(to: turn.userMessage)
+                    responseContent = response.content
+                    break
+                } catch {
+                    lastError = error
+                    let desc = error.localizedDescription.lowercased()
+                    let isTransient = desc.contains("error -1") || desc.contains("generation")
+                    guard isTransient && attempt < 3 else { break }
+                    try? await Task.sleep(for: .seconds(Double(attempt * 3)))
+                }
             }
+            agentResponse = responseContent ?? "[ERROR: \(lastError?.localizedDescription ?? "unknown")]"
 
             let turnFetchCount = mock.fetchCallCount - previousFetchCount
             let turnCreateCount = mock.createCallCount - previousCreateCount
@@ -676,7 +897,9 @@ final class EvalRunner {
                 updateCallCount: mock.updateCallCount,
                 turnUpdateCallCount: turnUpdateCount,
                 lastCreatedEvent: mock.lastCreatedEvent,
-                lastCreateArgs: mock.lastCreateArgs
+                lastCreateArgs: mock.lastCreateArgs,
+                lastFetchArgs: mock.lastFetchArgs,
+                fetchArgsHistory: mock.fetchArgsHistory
             )
 
             var gradingResults: [GradeResult] = []
@@ -918,6 +1141,837 @@ func makeRelativeDate(daysFromNow: Int, hour: Int, minute: Int = 0) -> Date {
     let cal = Calendar.current
     let base = cal.startOfDay(for: Date())
     return cal.date(byAdding: DateComponents(day: daysFromNow, hour: hour, minute: minute), to: base)!
+}
+
+// MARK: - Read/Retrieve Eval Scenarios
+
+func buildReadRetrieveScenarios() -> [EvalScenario] {
+    let cal = Calendar.current
+    let today = cal.startOfDay(for: Date())
+    func daysFrom(_ n: Int) -> Date { cal.date(byAdding: .day, value: n, to: today)! }
+
+    // Compute days until the next specific weekday (1=Sun, 2=Mon, ..., 5=Thu, 7=Sat)
+    // Returns 0 if today IS that weekday
+    func daysUntilWeekday(_ target: Int) -> Int { (target - cal.component(.weekday, from: today) + 7) % 7 }
+    let daysToThursday = daysUntilWeekday(5)  // 0 if today is Thursday, else 1–6
+    let daysToFriday   = daysUntilWeekday(6)
+
+    return [
+        // ── A: BASIC SCHEDULE QUERIES ──────────────────────────────────
+
+        EvalScenario(
+            id: "a-today-schedule",
+            category: "Read — Basic",
+            name: "Today's full schedule — no filter",
+            seedEvents: [
+                makeTestEvent(title: "Morning standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Design review", daysFromNow: 0, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's on my schedule today?",
+                graders: [
+                    toolCalledGrader(),
+                    noTitleFilterUsedGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                    // noMarkdownInResponseGrader intentionally omitted: tested specifically in i-voice-friendly-no-markdown
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "a-tomorrow-schedule",
+            category: "Read — Basic",
+            name: "Tomorrow's schedule",
+            seedEvents: [
+                makeTestEvent(title: "Budget review", daysFromNow: 1, hour: 10, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What do I have tomorrow?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    eventFoundAndMentionedGrader(),
+                    fetchedForCorrectDayGrader(expectedDate: daysFrom(1)),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "a-this-week-single-call",
+            category: "Read — Basic",
+            name: "This week — must use single tool call",
+            seedEvents: [
+                makeTestEvent(title: "Monday sync", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Wednesday review", daysFromNow: 2, hour: 14, durationMinutes: 60),
+                makeTestEvent(title: "Friday retrospective", daysFromNow: 4, hour: 16, durationMinutes: 45)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What meetings do I have this week?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    noTitleFilterUsedGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "a-next-week-single-call",
+            category: "Read — Basic",
+            name: "Next week — single call covering full week",
+            seedEvents: [
+                makeTestEvent(title: "Quarterly review", daysFromNow: 7, hour: 10, durationMinutes: 90),
+                makeTestEvent(title: "Team offsite", daysFromNow: 9, hour: 9, durationMinutes: 480)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What do I have next week?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "a-specific-named-day",
+            category: "Read — Basic",
+            name: "Named weekday query",
+            seedEvents: [
+                makeTestEvent(title: "Product demo", daysFromNow: daysToThursday == 0 ? 7 : daysToThursday, hour: 11, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have anything on Thursday?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        // ── B: PERSON-NAME LOOKUP ───────────────────────────────────────
+
+        EvalScenario(
+            id: "b-person-match-today",
+            category: "Read — Person Lookup",
+            name: "Person lookup — match in title today",
+            seedEvents: [
+                makeTestEvent(title: "1:1 with Karthik", daysFromNow: 0, hour: 11, durationMinutes: 60),
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9, durationMinutes: 30)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have a meeting with Karthik today?",
+                graders: [
+                    toolCalledGrader(),
+                    personNameInFetchFilterGrader(personName: "Karthik"),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "b-person-no-match-empty-calendar",
+            category: "Read — Person Lookup",
+            name: "Person lookup — empty calendar must not hallucinate",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Do I have a meeting with Sarah today?",
+                graders: [
+                    toolCalledGrader(),
+                    noEventsFoundGrader()
+                    // nothingScheduledNotDontKnowGrader removed: noEventsFoundGrader covers person-specific "no match" responses
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "b-person-no-match-other-events-exist",
+            category: "Read — Person Lookup",
+            name: "Person lookup — other events exist but not with queried person",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Design sync", daysFromNow: 0, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have a meeting with Alex today?",
+                graders: [
+                    toolCalledGrader(),
+                    personNameInFetchFilterGrader(personName: "Alex"),
+                    noEventsFoundGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "b-person-name-in-notes-only",
+            category: "Read — Person Lookup",
+            name: "Person name only in notes — must NOT match (title-only filter)",
+            seedEvents: [
+                makeTestEvent(title: "Q3 planning session", daysFromNow: 0, hour: 10, durationMinutes: 60,
+                              notes: "Attendees: Jordan, Priya, Sam")
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have a meeting with Jordan today?",
+                graders: [
+                    toolCalledGrader(),
+                    personNameInFetchFilterGrader(personName: "Jordan"),
+                    noEventsFoundGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "b-person-tomorrow-lookup",
+            category: "Read — Person Lookup",
+            name: "Person lookup — tomorrow",
+            seedEvents: [
+                makeTestEvent(title: "1:1 with Priya", daysFromNow: 1, hour: 15, durationMinutes: 30)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have anything with Priya tomorrow?",
+                graders: [
+                    toolCalledGrader(),
+                    personNameInFetchFilterGrader(personName: "Priya"),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "b-no-retry-after-empty-filter",
+            category: "Read — Person Lookup",
+            name: "No retry after person filter returns empty",
+            seedEvents: [
+                makeTestEvent(title: "Team sync", daysFromNow: 2, hour: 10, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have a meeting with Maya this week?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    personNameInFetchFilterGrader(personName: "Maya"),
+                    noEventsFoundGrader()
+                ]
+            )]
+        ),
+
+        // ── C: KEYWORD SEARCH ───────────────────────────────────────────
+
+        EvalScenario(
+            id: "c-keyword-in-title",
+            category: "Read — Keyword",
+            name: "Keyword search — word in title",
+            seedEvents: [
+                makeTestEvent(title: "Daily standup", daysFromNow: 0, hour: 9, durationMinutes: 15),
+                makeTestEvent(title: "Daily standup", daysFromNow: 1, hour: 9, durationMinutes: 15),
+                makeTestEvent(title: "Design review", daysFromNow: 2, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have any standups this week?",
+                graders: [
+                    toolCalledGrader(),
+                    titleFilterUsedGrader(expectedFilter: "standup"),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "c-keyword-no-match",
+            category: "Read — Keyword",
+            name: "Keyword search — no events match",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Design review", daysFromNow: 2, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have any retrospective meetings this week?",
+                graders: [
+                    toolCalledGrader(),
+                    titleFilterUsedGrader(expectedFilter: "retrospective"),
+                    noEventsFoundGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "c-broad-query-no-filter",
+            category: "Read — Keyword",
+            name: "Broad query 'any meetings' must NOT use titleFilter",
+            seedEvents: [
+                makeTestEvent(title: "Doctor appointment", daysFromNow: 1, hour: 10, durationMinutes: 60),
+                makeTestEvent(title: "1:1 with Sam", daysFromNow: 1, hour: 14, durationMinutes: 30)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have any meetings tomorrow?",
+                graders: [
+                    toolCalledGrader(),
+                    noTitleFilterUsedGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        // ── D: DATE ARITHMETIC ──────────────────────────────────────────
+
+        EvalScenario(
+            id: "d-yesterday-query",
+            category: "Read — Date Arithmetic",
+            name: "Yesterday date arithmetic",
+            seedEvents: [
+                makeTestEvent(title: "Customer call", daysFromNow: -1, hour: 11, durationMinutes: 45)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What did I have yesterday?",
+                graders: [
+                    toolCalledGrader(),
+                    fetchedForCorrectDayGrader(expectedDate: daysFrom(-1)),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "d-next-3-days",
+            category: "Read — Date Arithmetic",
+            name: "Next 3 days — correct bounded range",
+            seedEvents: [
+                makeTestEvent(title: "Sprint planning", daysFromNow: 1, hour: 10, durationMinutes: 120),
+                makeTestEvent(title: "Demo prep", daysFromNow: 2, hour: 14, durationMinutes: 60),
+                makeTestEvent(title: "Next week kickoff", daysFromNow: 7, hour: 9, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What do I have coming up in the next 3 days?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "d-this-month-full-range",
+            category: "Read — Date Arithmetic",
+            name: "This month — correct full range",
+            seedEvents: [
+                makeTestEvent(title: "Board presentation", daysFromNow: 5, hour: 9, durationMinutes: 120),
+                makeTestEvent(title: "Team offsite", daysFromNow: 20, hour: 8, durationMinutes: 480)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's happening this month?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "d-named-calendar-date",
+            category: "Read — Date Arithmetic",
+            name: "Named calendar date — specific month and day",
+            seedEvents: [
+                makeTestEvent(title: "Annual performance review", daysFromNow: 14, hour: 10, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have anything on June 15th?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        // ── E: EMPTY RESULTS ────────────────────────────────────────────
+
+        EvalScenario(
+            id: "e-empty-today",
+            category: "Read — Empty Results",
+            name: "Empty calendar — must say nothing scheduled, not 'I don't know'",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "What's on my schedule today?",
+                graders: [
+                    toolCalledGrader(),
+                    nothingScheduledNotDontKnowGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "e-empty-specific-day",
+            category: "Read — Empty Results",
+            name: "No events on queried day — events exist on other days",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Design review", daysFromNow: 2, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have anything on Saturday?",
+                graders: [
+                    toolCalledGrader(),
+                    nothingScheduledNotDontKnowGrader()
+                ]
+            )]
+        ),
+
+        // ── F: HALLUCINATION GUARDS ─────────────────────────────────────
+
+        EvalScenario(
+            id: "f-no-hallucination-non-empty-calendar",
+            category: "Read — Hallucination Guard",
+            name: "Events exist but none match person — must not hallucinate",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Product review", daysFromNow: 0, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have a meeting with Mike today?",
+                graders: [
+                    toolCalledGrader(),
+                    personNameInFetchFilterGrader(personName: "Mike"),
+                    noEventsFoundGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "f-no-fetch-positive-claim",
+            category: "Read — Hallucination Guard",
+            name: "Must fetch before claiming any event exists",
+            seedEvents: [
+                makeTestEvent(title: "Client call", daysFromNow: 1, hour: 15, durationMinutes: 45)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Do I have anything tomorrow afternoon?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "f-no-retry-different-person",
+            category: "Read — Hallucination Guard",
+            name: "No retry without filter — single call, empty result, immediate report",
+            seedEvents: [],  // Empty: no events means no possible hallucination match
+            turns: [EvalTurn(
+                userMessage: "Do I have a meeting with Jordan this week?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    noEventsFoundGrader()
+                ]
+            )]
+        ),
+
+        // ── G: NO TOOL CALL ─────────────────────────────────────────────
+
+        EvalScenario(
+            id: "g-non-calendar-prep-question",
+            category: "Read — No Tool Call",
+            name: "Advice question mentioning 'tomorrow' — must NOT fetch",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "What should I do tomorrow to prepare for a big presentation?",
+                graders: [
+                    nonCalendarQueryNoFetchGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "g-greeting-no-tool",
+            category: "Read — No Tool Call",
+            name: "Greeting — no calendar lookup",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Good morning! How are you?",
+                graders: [
+                    noToolCallGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "g-factual-question-no-tool",
+            category: "Read — No Tool Call",
+            name: "General factual question — no calendar fetch",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "What time is it in Tokyo right now?",
+                graders: [
+                    nonCalendarQueryNoFetchGrader()
+                ]
+            )]
+        ),
+
+        // ── H: MULTI-EVENT / RESPONSE QUALITY ──────────────────────────
+
+        EvalScenario(
+            id: "h-multiple-events-all-mentioned",
+            category: "Read — Multi-Event",
+            name: "Three events today — all mentioned in response",
+            seedEvents: [
+                makeTestEvent(title: "Morning standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "1:1 with Lisa", daysFromNow: 0, hour: 11, durationMinutes: 60),
+                makeTestEvent(title: "Sprint retrospective", daysFromNow: 0, hour: 15, durationMinutes: 90)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's on my schedule today?",
+                graders: [
+                    toolCalledGrader(),
+                    noTitleFilterUsedGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                    // noMarkdownInResponseGrader covered specifically in i-voice-friendly-no-markdown
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "h-count-events-this-week",
+            category: "Read — Multi-Event",
+            name: "Count events this week — agent must report the correct number",
+            seedEvents: [
+                makeTestEvent(title: "Daily standup", daysFromNow: 0, hour: 9, durationMinutes: 15),
+                makeTestEvent(title: "Design review", daysFromNow: 1, hour: 14, durationMinutes: 60),
+                makeTestEvent(title: "Team sync", daysFromNow: 3, hour: 10, durationMinutes: 30)
+            ],
+            turns: [EvalTurn(
+                userMessage: "How many meetings do I have this week?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    responseContainsAnyGrader(name: "Count mentioned in response",
+                        indicators: ["3", "three", "three meetings", "3 meetings"]),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "h-same-title-events-no-id-collision",
+            category: "Read — Multi-Event",
+            name: "Same-title events (recurring standup) — no ID collision in response",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Team standup", daysFromNow: 2, hour: 9, durationMinutes: 30)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's on my schedule this week?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "h-multi-turn-refetch-new-day",
+            category: "Read — Multi-Event",
+            name: "Multi-turn: follow-up for different day must re-fetch",
+            seedEvents: [
+                makeTestEvent(title: "Morning standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Product demo", daysFromNow: 3, hour: 11, durationMinutes: 60)
+            ],
+            turns: [
+                EvalTurn(
+                    userMessage: "What's on my schedule today?",
+                    graders: [
+                        toolCalledGrader(),
+                        eventTitleMentionedByNameGrader(expectedTitle: "Morning standup"),
+                        noUUIDInResponseGrader()
+                    ]
+                ),
+                EvalTurn(
+                    userMessage: "What about Thursday?",
+                    graders: [
+                        refetchOnNewDayQueryGrader(),
+                        noUUIDInResponseGrader()
+                    ]
+                )
+            ]
+        ),
+
+        // ── I: RESPONSE FORMAT / ID HYGIENE ────────────────────────────
+
+        EvalScenario(
+            id: "i-no-event-id-in-response",
+            category: "Read — Format Hygiene",
+            name: "Event IDs must never appear in voice output",
+            seedEvents: [
+                makeTestEvent(title: "Standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "1:1 with Sam", daysFromNow: 0, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's on my schedule today?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader(),
+                    noEventIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "i-voice-friendly-no-markdown",
+            category: "Read — Format Hygiene",
+            name: "Voice-friendly format — no bullet points or markdown",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9, durationMinutes: 30)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's on my schedule today?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noMarkdownInResponseGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "i-date-from-tool-not-query-range",
+            category: "Read — Format Hygiene",
+            name: "Agent reads event date from tool result, not from query boundary",
+            seedEvents: [
+                makeTestEvent(title: "Architecture review", daysFromNow: 9, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What do I have next week?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                    // noMarkdownInResponseGrader omitted: content accuracy is what's tested here
+                ]
+            )]
+        ),
+
+        // ── J: AMBIGUOUS QUERIES ────────────────────────────────────────
+
+        EvalScenario(
+            id: "j-this-friday-upcoming",
+            category: "Read — Ambiguous",
+            name: "This Friday — must fetch upcoming Friday, not wrong week",
+            seedEvents: [
+                makeTestEvent(title: "End of week review", daysFromNow: daysToFriday == 0 ? 7 : daysToFriday, hour: 16, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What do I have this Friday?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "j-free-time-tomorrow-afternoon",
+            category: "Read — Ambiguous",
+            name: "Free time query — must fetch before answering",
+            seedEvents: [
+                makeTestEvent(title: "Client presentation", daysFromNow: 1, hour: 14, durationMinutes: 90)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Am I free tomorrow afternoon?",
+                graders: [
+                    toolCalledGrader(),
+                    // Agent should report they're NOT free (has a 2 PM event) — may not say exact title name
+                    responseContainsAnyGrader(name: "Reports afternoon is not free",
+                        indicators: ["not free", "not completely free", "have a", "have something", "scheduled",
+                                     "presentation", "meeting", "busy", "2 pm", "2:00", "at 2"])
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "j-next-meeting-must-fetch",
+            category: "Read — Ambiguous",
+            name: "Next meeting query — must fetch today's events",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9, durationMinutes: 30),
+                makeTestEvent(title: "Design sync", daysFromNow: 0, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's my next meeting?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        // ── K: EDGE CASES ───────────────────────────────────────────────
+
+        EvalScenario(
+            id: "k-past-event-yesterday",
+            category: "Read — Edge Cases",
+            name: "Past event — yesterday",
+            seedEvents: [
+                makeTestEvent(title: "Legal briefing", daysFromNow: -1, hour: 10, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Did I have anything yesterday?",
+                graders: [
+                    toolCalledGrader(),
+                    fetchedForCorrectDayGrader(expectedDate: daysFrom(-1)),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "k-all-day-event",
+            category: "Read — Edge Cases",
+            name: "All-day event — must not say '12:00 AM'",
+            seedEvents: [
+                makeTestEvent(title: "Company holiday", daysFromNow: 0, hour: 0, durationMinutes: 1440, isAllDay: true)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's on my calendar today?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader(),
+                    responseContainsAnyGrader(name: "All-day description is natural",
+                        indicators: ["all day", "holiday", "company holiday"])
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "k-overlapping-events",
+            category: "Read — Edge Cases",
+            name: "Overlapping events at the same start time — both must be reported",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 10, durationMinutes: 30),
+                makeTestEvent(title: "Investor briefing", daysFromNow: 1, hour: 10, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What do I have at 10 AM tomorrow?",
+                graders: [
+                    toolCalledGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "k-multi-day-event-straddle",
+            category: "Read — Edge Cases",
+            name: "Multi-day event straddling query boundary",
+            seedEvents: [
+                makeTestEvent(title: "WWDC Conference", daysFromNow: -1, hour: 9, durationMinutes: 2880)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's on my calendar today?",
+                graders: [
+                    toolCalledGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "k-upcoming-no-qualifier",
+            category: "Read — Edge Cases",
+            name: "Upcoming with no qualifier — must fetch near-future range",
+            seedEvents: [
+                makeTestEvent(title: "Doctor appointment", daysFromNow: 2, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What are my upcoming events?",
+                graders: [
+                    toolCalledGrader(),
+                    singleFetchCallThisTurnGrader(),
+                    eventFoundAndMentionedGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "k-no-events-dont-know",
+            category: "Read — Edge Cases",
+            name: "Tool returns empty — agent says 'nothing' not 'I don't know'",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Do I have any appointments next month?",
+                graders: [
+                    toolCalledGrader(),
+                    nothingScheduledNotDontKnowGrader()
+                ]
+            )]
+        ),
+
+    ]
+}
+
+// MARK: - Read/Retrieve Test Runner
+
+@MainActor
+func runReadRetrieveSuite() async -> (passed: Int, failed: Int) {
+    let scenarios = buildReadRetrieveScenarios()
+    let runner = EvalRunner()
+    runner.fetchOnly = true  // read scenarios only need FetchCalendarEventsTool — saves context budget
+    await runner.run(scenarios: scenarios)
+
+    print("\n" + String(repeating: "=", count: 80))
+    print("READ/RETRIEVE EVAL RESULTS (\(scenarios.count) scenarios)")
+    print(String(repeating: "=", count: 80))
+
+    let totalPassed = runner.results.filter(\.passed).count
+    let totalFailed = runner.results.count - totalPassed
+
+    for result in runner.results {
+        let status = result.passed ? "✓ PASS" : "✗ FAIL"
+        print("\n[\(status)] \(result.scenarioName)")
+        print("    Category: \(result.category)")
+        for turnResult in result.turnResults {
+            print("    User: \(turnResult.userMessage)")
+            print("    Agent: \(turnResult.agentResponse.prefix(120))...")
+            for grade in turnResult.gradingResults {
+                print("    \(grade.message)")
+            }
+        }
+    }
+
+    print("\n" + String(repeating: "=", count: 80))
+    print("SUMMARY: \(totalPassed)/\(scenarios.count) passed, \(totalFailed) failed")
+    print(String(repeating: "=", count: 80) + "\n")
+    return (totalPassed, totalFailed)
 }
 
 // MARK: - Test Harness

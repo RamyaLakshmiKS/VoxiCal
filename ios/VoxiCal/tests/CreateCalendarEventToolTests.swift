@@ -76,7 +76,8 @@ final class CreateCalendarEventToolTests: XCTestCase {
                 startDate: makeDate("2026-06-01T14:30"),
                 endDate: makeDate("2026-06-01T15:15"),
                 location: "Conference Room A",
-                notes: nil
+                notes: nil,
+                isAllDay: false
             )
         ]
 
@@ -104,7 +105,8 @@ final class CreateCalendarEventToolTests: XCTestCase {
                 startDate: makeDate("2026-06-01T14:30"),
                 endDate: makeDate("2026-06-01T15:00"),
                 location: "Conference Room A",
-                notes: nil
+                notes: nil,
+                isAllDay: false
             )
         ]
 

@@ -10,12 +10,9 @@ struct CalendarEvent: Codable, CustomStringConvertible, Sendable {
     let endDate: Date
     let location: String?
     let notes: String?
+    let isAllDay: Bool
 
     var description: String {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        let time = formatter.string(from: startDate)
-
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         let eventDay = calendar.startOfDay(for: startDate)
@@ -25,13 +22,23 @@ struct CalendarEvent: Codable, CustomStringConvertible, Sendable {
             dayLabel = "Today"
         } else if eventDay == calendar.date(byAdding: .day, value: 1, to: today) {
             dayLabel = "Tomorrow"
+        } else if eventDay == calendar.date(byAdding: .day, value: -1, to: today) {
+            dayLabel = "Yesterday"
         } else {
             let formatter2 = DateFormatter()
             formatter2.dateFormat = "EEE, MMM d"
             dayLabel = formatter2.string(from: startDate)
         }
 
-        return "• \(title) — \(dayLabel) \(time)"
+        if isAllDay {
+            return "• \(title) — \(dayLabel), all day"
+        }
+
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        let startTime = formatter.string(from: startDate)
+        let endTime = formatter.string(from: endDate)
+        return "• \(title) — \(dayLabel) \(startTime)–\(endTime)"
     }
 }
 
@@ -122,7 +129,8 @@ class CalendarService {
                     startDate: event.startDate,
                     endDate: event.endDate,
                     location: event.location,
-                    notes: event.notes
+                    notes: event.notes,
+                    isAllDay: event.isAllDay
                 )
             }
             .sorted { $0.startDate < $1.startDate }
@@ -165,7 +173,8 @@ class CalendarService {
             startDate: startDate,
             endDate: ekEvent.endDate,
             location: location,
-            notes: notes
+            notes: notes,
+            isAllDay: false
         )
     }
 
@@ -204,7 +213,8 @@ class CalendarService {
             startDate: event.startDate,
             endDate: event.endDate,
             location: event.location,
-            notes: event.notes
+            notes: event.notes,
+            isAllDay: event.isAllDay
         )
     }
 }

@@ -44,6 +44,7 @@ class VoxiCalAgent {
     var errorMessage: String?    = nil
     var showSettingsAlert        = false
     private var pendingCreateRequest: String?
+    private var sessionCreationDay: Date = .distantPast
 
     // MARK: - Agent Instructions
 
@@ -53,20 +54,26 @@ class VoxiCalAgent {
         You help users understand and manage their schedule using only the tools provided.
 
         Tool usage:
-        - Call fetchCalendarEvents to retrieve the user's schedule.
+        - Call fetchCalendarEvents to retrieve the user's schedule — whenever they ask \
+          about events, meetings, appointments, or availability, past or future.
+        - Call it ONCE per question with the correct date range. Never call it multiple \
+          times for the same query. Do not call it for general knowledge (time zones, weather).
         - To delete an event: ALWAYS call fetchCalendarEvents first to get the current \
           event list. Identify the event, name it in your reply for the user to confirm, \
           then call deleteCalendarEvent with the exact eventID from that fetch result.
 
-        fetchCalendarEvents date ranges (startISO / endISO in YYYY-MM-DD format):
-        - Single day: set both to the same date. "today" → today, "tomorrow" → tomorrow, \
-          "August 15th" → that literal date, "2 days ago" → today minus 2 days.
-        - Multi-day range: startISO = first day, endISO = last day (both inclusive). \
-          "this week" → today through 6 days later, "next month" → first through last day \
-          of that month, "past 3 days through tomorrow" → 3 days ago through tomorrow.
-        Always compute actual calendar dates from today's date before calling the tool. \
-        IMPORTANT: Always fetch with a SINGLE call covering the full date range — \
-        never call this tool multiple times to iterate through individual days.
+        fetchCalendarEvents date ranges (startISO / endISO in YYYY-MM-DD). \
+        Use the pre-computed values from the date prefix above — never compute by hand:
+        - Single day: set both to the same date. "today"→today. "tomorrow"→tomorrow. "yesterday"→yesterday.
+        - "this week" → startISO=this week start, endISO=this week end (calendar week, NOT rolling +6 days).
+        - "next week" → startISO=next week start, endISO=next week end.
+        - "this month" → startISO=this month start, endISO=this month end.
+        - "next month" → startISO=next month start, endISO=next month end.
+        - "last month" → startISO=last month start, endISO=last month end.
+        - "this weekend" → startISO=this weekend Saturday, endISO=this weekend Sunday.
+        - "upcoming" (no qualifier) → startISO=today, endISO=this week end.
+        - "next [weekday]" → always today+7 for that weekday, even if today IS that weekday.
+        Always fetch with a SINGLE call covering the full date range — never call per day.
 
         Event IDs: Each event line ends with [eventID:XXX]. Use the exact full string \
         (including any colons) when calling update or delete tools. \
@@ -80,28 +87,31 @@ class VoxiCalAgent {
         updating or creating them. Never report "updated" or "scheduled" unless \
         the action tool explicitly confirmed it.
 
-        Accuracy — follow these rules without exception:
-        - ONLY report events that appear verbatim in the fetchCalendarEvents tool response.
-        - If the tool returns "No events found", tell the user there are no events. \
-          Never invent or imply a meeting exists.
-        - An event matches a person ONLY if that person's name appears in the event title. \
-          "Team standup" is NOT a meeting with Sarah. "Lunch with John" is NOT a meeting \
-          with Sarah. Never associate an event with a person whose name is not in the title.
-        - If events are returned but none have the person's name in the title, say explicitly \
-          that no matching meeting was found. Do not assume any event counts as a match.
-        - Inventing a "yes, you have a meeting" when none exists is a critical error. \
-          When in doubt, say no and suggest the user check their calendar app directly.
-        - When searching for a meeting with a specific person, use titleFilter with their name. \
-          If the filtered search returns no results, report immediately that no matching \
-          meeting was found. Never retry the same query without the filter.
+        Accuracy — ABSOLUTE RULES, no exceptions:
+        - ONLY report events that appear in the fetchCalendarEvents tool response. \
+          Never use training knowledge, assumptions, or conversation memory to claim any event exists.
+        - STOP RULE: If the tool returns empty or "No events found" → you MUST say \
+          "You have nothing scheduled" or "I don't see any [meetings/events]." \
+          You CANNOT say "yes" or imply any event exists. Not ever. Not even if you think you know.
+        - An event matches a person ONLY if that person's name appears in the event TITLE. \
+          "Team standup" is NOT a meeting with Sarah. Unrelated events are NEVER a match.
+        - When the user asks about a specific person, ALWAYS use titleFilter with that name. \
+          If the filtered result is empty → say immediately: 'I don't see a meeting with [name] today/this week.' \
+          NEVER retry without the filter and NEVER report an unrelated event as a match.
+        - titleFilter rules — follow exactly: \
+          (a) Use for named-person queries: "meeting with Sarah" → titleFilter='Sarah'. \
+          (b) Do NOT use for broad queries ("what's on my schedule", "any meetings today"). \
+          (c) BANNED filter words — never use these: meeting meetings appointment appointments \
+              event events call calls session sessions. They miss events not named that way.
 
         Response style — this is a VOICE assistant, responses are spoken aloud:
         - Use plain conversational sentences only. No markdown, no bold, no headers, \
-          no bullet symbols, no dashes, no numbered lists.
-        - Keep replies to one or two sentences. For multiple events, read them out \
-          naturally: "You have two meetings tomorrow — standup at 9 and a sync at 2."
-        - Format times and dates as a person would say them: "tomorrow at 9 AM", \
-          "this Friday at 2 PM", "June 6th at 5".
+          no bullet symbols (•), no dashes (-), no asterisks (*), no numbered lists. \
+          These are read aloud literally by TTS and sound broken.
+        - Keep replies to one or two sentences. For 2–4 events: "You have standup at 9 and a review at 2." \
+          For 5+ events: "You have N meetings this week. The main ones are..." — list at most 3 specifics.
+        - For all-day events (holidays, birthdays, PTO), say "[title], all day [day label]" — never read a time.
+        - Format times and dates as a person would say them: "tomorrow at 9 AM", "this Friday at 2 PM".
         - NEVER include eventID, internal IDs, or any bracket notation in responses.
 
         Date accuracy:
@@ -214,20 +224,77 @@ class VoxiCalAgent {
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
-        let isoToday       = f.string(from: today)
-        let isoTomorrow    = f.string(from: cal.date(byAdding: .day, value: 1,  to: today)!)
-        let iso14DaysLater = f.string(from: cal.date(byAdding: .day, value: 14, to: today)!)
+
+        let isoToday        = f.string(from: today)
+        let isoTomorrow     = f.string(from: cal.date(byAdding: .day, value:  1, to: today)!)
+        let isoYesterday    = f.string(from: cal.date(byAdding: .day, value: -1, to: today)!)
+        let iso14DaysLater  = f.string(from: cal.date(byAdding: .day, value: 14, to: today)!)
+
+        // Calendar-week boundaries (locale-aware)
+        let thisWeekInterval = cal.dateInterval(of: .weekOfYear, for: today)!
+        let isoThisWeekStart = f.string(from: thisWeekInterval.start)
+        let isoThisWeekEnd   = f.string(from: cal.date(byAdding: .day, value: -1, to: thisWeekInterval.end)!)
+
+        let nextWeekInterval = cal.dateInterval(of: .weekOfYear, for: thisWeekInterval.end)!
+        let isoNextWeekStart = f.string(from: nextWeekInterval.start)
+        let isoNextWeekEnd   = f.string(from: cal.date(byAdding: .day, value: -1, to: nextWeekInterval.end)!)
+
+        // Month boundaries
+        let thisMonthInterval = cal.dateInterval(of: .month, for: today)!
+        let isoThisMonthStart = f.string(from: thisMonthInterval.start)
+        let isoThisMonthEnd   = f.string(from: cal.date(byAdding: .day, value: -1, to: thisMonthInterval.end)!)
+
+        let nextMonthInterval = cal.dateInterval(of: .month, for: thisMonthInterval.end)!
+        let isoNextMonthStart = f.string(from: nextMonthInterval.start)
+        let isoNextMonthEnd   = f.string(from: cal.date(byAdding: .day, value: -1, to: nextMonthInterval.end)!)
+
+        let lastMonthDate     = cal.date(byAdding: .month, value: -1, to: today)!
+        let lastMonthInterval = cal.dateInterval(of: .month, for: lastMonthDate)!
+        let isoLastMonthStart = f.string(from: lastMonthInterval.start)
+        let isoLastMonthEnd   = f.string(from: cal.date(byAdding: .day, value: -1, to: lastMonthInterval.end)!)
+
+        // Weekday dates this week (all computed from this week's Monday)
+        let weekdayToday = cal.component(.weekday, from: today) // 1=Sun, 2=Mon, ..., 7=Sat
+        let daysToMon = (weekdayToday == 1) ? 1 : (2 - weekdayToday + 7) % 7
+        let thisWeekMon = cal.date(byAdding: .day, value: -(daysToMon == 0 ? 0 : 7 - daysToMon), to: today)!
+        // Simpler: use the week interval start
+        let isoThisMonday    = f.string(from: thisWeekInterval.start)
+        let isoThisTuesday   = f.string(from: cal.date(byAdding: .day, value: 1, to: thisWeekInterval.start)!)
+        let isoThisWednesday = f.string(from: cal.date(byAdding: .day, value: 2, to: thisWeekInterval.start)!)
+        let isoThisThursday  = f.string(from: cal.date(byAdding: .day, value: 3, to: thisWeekInterval.start)!)
+        let isoThisFriday    = f.string(from: cal.date(byAdding: .day, value: 4, to: thisWeekInterval.start)!)
+
+        // Weekend (nearest upcoming Saturday and Sunday)
+        let daysToSat = weekdayToday == 7 ? 0 : 7 - weekdayToday
+        let daysToSun = weekdayToday == 1 ? 0 : 8 - weekdayToday
+        let isoThisSaturday = f.string(from: cal.date(byAdding: .day, value: daysToSat, to: today)!)
+        let isoThisSunday   = f.string(from: cal.date(byAdding: .day, value: daysToSun, to: today)!)
+
+        // Current time (HH:mm local)
+        let tf = DateFormatter()
+        tf.locale = Locale(identifier: "en_US_POSIX")
+        tf.dateFormat = "HH:mm"
+        let isoCurrentTime = tf.string(from: Date())
+
         let verbose = DateFormatter.localizedString(from: Date(), dateStyle: .full, timeStyle: .none)
         let prefix = """
-            Today is \(verbose). \
-            YYYY-MM-DD dates: today=\(isoToday), tomorrow=\(isoTomorrow), \
+            Today is \(verbose). Current time: \(isoCurrentTime). \
+            YYYY-MM-DD dates — use these EXACTLY: \
+            today=\(isoToday), tomorrow=\(isoTomorrow), yesterday=\(isoYesterday), \
             14-days-from-today=\(iso14DaysLater). \
-            When the user says "tomorrow", ALWAYS use '\(isoTomorrow)' — \
-            never use a date mentioned elsewhere in the conversation. \
+            Weekdays this week: Mon=\(isoThisMonday), Tue=\(isoThisTuesday), \
+            Wed=\(isoThisWednesday), Thu=\(isoThisThursday), Fri=\(isoThisFriday). \
+            This week: \(isoThisWeekStart) through \(isoThisWeekEnd). \
+            Next week: \(isoNextWeekStart) through \(isoNextWeekEnd). \
+            This month: \(isoThisMonthStart) through \(isoThisMonthEnd). \
+            Next month: \(isoNextMonthStart) through \(isoNextMonthEnd). \
+            Last month: \(isoLastMonthStart) through \(isoLastMonthEnd). \
+            This weekend: \(isoThisSaturday) through \(isoThisSunday). \
+            When the user says "tomorrow", ALWAYS use \(isoTomorrow). \
             When fetching to find an event to update or reschedule: \
-            use startISO='\(isoToday)' and endISO='\(iso14DaysLater)'. \
-            Do NOT use \(iso14DaysLater) as startISO.
+            use startISO=\(isoToday) and endISO=\(iso14DaysLater).
             """
         return prefix + "\n\n" + agentInstructions
     }
@@ -244,6 +311,7 @@ class VoxiCalAgent {
 
         let instructions = VoxiCalAgent.buildInstructions()
 
+        sessionCreationDay = Calendar.current.startOfDay(for: Date())
         session = LanguageModelSession(
             tools: tools,
             instructions: instructions
@@ -256,6 +324,15 @@ class VoxiCalAgent {
     func sendMessage(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isProcessing else { return }
+
+        // Rebuild session if calendar date has rolled past midnight (stale date anchors)
+        let currentDay = Calendar.current.startOfDay(for: Date())
+        if currentDay != sessionCreationDay, session != nil {
+            logger.info("Calendar date changed since session was built — rebuilding with fresh anchors")
+            clearConversation()
+            messages.append(ChatMessage(role: .assistant, text: "It's a new day — I've refreshed my date references. Please ask again!"))
+            return
+        }
 
         logger.info("[USER] \(trimmed, privacy: .public)")
 
