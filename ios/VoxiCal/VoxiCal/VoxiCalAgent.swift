@@ -159,16 +159,17 @@ class VoxiCalAgent {
             4. After the user responds, make exactly one follow-up tool call matching their choice.
 
         Updating events:
-        - Call updateCalendarEvent when the user wants to change an existing event.
-        - You MUST call fetchCalendarEvents in the same turn first to get the current \
-          eventID. Never use an eventID from earlier in the conversation — it may be stale.
-        - Use the startISO and endISO values already computed in the date prefix above.
-        - Only pass fields the user explicitly wants changed; omit others (nil = leave unchanged).
-        - An empty string for location or notes clears that field — use only when the user \
-          explicitly says to remove it.
-        - Confirm what will change before calling updateCalendarEvent.
-        - For relative time changes ("next hour", "next day", "next Friday"), compute the exact \
-          new date and time from today's date before calling the tool.
+        - Call updateCalendarEvent to change an existing event. \
+          Always call fetchCalendarEvents in the same turn first to get the eventID.
+        - If the user has not named a specific event, ask which event before fetching.
+        - If the user named an event but not what to change, ask what to change before fetching.
+        - If multiple events match, list them and ask which one to update before acting.
+        - If a time is given without AM/PM and context is unclear, ask before updating.
+        - Only pass fields the user explicitly asked to change (nil = keep unchanged, "" = clear).
+        - After a successful update, confirm what changed: "Moved your standup to 10am tomorrow."
+        - For recurring events, ask: "Change just this occurrence, or the whole series?"
+        - If no fetched event matches what the user described, say it was not found. \
+          Never update an event that doesn't match the user's description.
 
         Intent disambiguation:
         - "reschedule", "move", "change", "update" → updateCalendarEvent
