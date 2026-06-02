@@ -48,7 +48,7 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
             """)
         var endISO: String
 
-        @Guide(description: "Specific name or keyword to filter by — e.g. 'Karthik', 'standup', 'doctor'. Omit for broad queries like 'what's on my schedule' or 'any meetings'. NEVER use generic words like 'meeting' or 'appointment' — they miss events not titled that way.")
+        @Guide(description: "Specific name or keyword to filter by. RULES: (1) MUST use for person queries: 'meeting with Karthik' → titleFilter='Karthik'. (2) USE for specific event-type keywords user explicitly names: 'standup' → 'standup', 'doctor' → 'doctor'. (3) MUST NOT use for broad queries ('what is on my schedule', 'any meetings today') — omit entirely. (4) NEVER use generic words: meeting, meetings, appointment, appointments, event, events, call, calls. (5) If filter returns empty, report immediately — do NOT retry without filter.")
         var titleFilter: String?
     }
 
@@ -69,10 +69,16 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
         // Make end exclusive: fetch up to end of the specified end day
         let endDate = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: endDay))!
 
-        // Normalize wildcard filters (*, all, any) to nil so all events are returned.
+        // Normalize wildcards and generic words to nil so all events are returned.
+        // Generic words like "meeting" as a filter would miss events not titled that way.
+        let genericFilterWords: Set<String> = [
+            "meeting", "meetings", "appointment", "appointments",
+            "event", "events", "call", "calls", "session", "sessions",
+            "schedule", "calendar", "*", "all", "any"
+        ]
         let effectiveFilter: String? = arguments.titleFilter.flatMap {
             let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (t.isEmpty || t == "*" || t.lowercased() == "all" || t.lowercased() == "any") ? nil : t
+            return (t.isEmpty || genericFilterWords.contains(t.lowercased())) ? nil : t
         }
 
         let events = try await calendarService.fetchEvents(
@@ -81,7 +87,11 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
             titleFilter: effectiveFilter
         )
 
-        if events.isEmpty {
+        let maxEvents = 25
+        let truncated = events.count > maxEvents
+        let displayEvents = truncated ? Array(events.prefix(maxEvents)) : events
+
+        if displayEvents.isEmpty {
             let resultMsg = "[TOOL RESULT] No events found"
             logger.info("\(resultMsg, privacy: .public)")
             if let filter = arguments.titleFilter, !filter.isEmpty {
@@ -89,23 +99,27 @@ struct FetchCalendarEventsTool: Tool, @unchecked Sendable {
             }
             return "No events found for the requested time range."
         }
-        
-        let resultMsg = "[TOOL RESULT] Returned \(events.count) events"
+
+        let resultMsg = "[TOOL RESULT] Returned \(displayEvents.count) events"
         logger.info("\(resultMsg, privacy: .public)")
 
         // Separate human-readable event lines from internal IDs so the model
         // doesn't echo IDs into the user-facing response.
-        let eventLines = events.map { event -> String in
+        let eventLines = displayEvents.map { event -> String in
             var parts = [event.description]
             if let loc = event.location { parts.append("at \(loc)") }
             if let notes = event.notes  { parts.append("(\(notes))") }
             return parts.joined(separator: " ")
         }.joined(separator: "\n")
 
-        let idSection = events.map { "  \($0.title): \($0.id)" }.joined(separator: "\n")
+        let idFormatter = DateFormatter()
+        idFormatter.locale = Locale(identifier: "en_US_POSIX")
+        idFormatter.dateFormat = "EEE MMM d HH:mm"
+        let idSection = displayEvents.map { "  \($0.title) (\(idFormatter.string(from: $0.startDate))): \($0.id)" }.joined(separator: "\n")
 
+        let truncationNotice = truncated ? "\n(Showing \(maxEvents) of \(events.count) events — narrow your date range to see more.)" : ""
         return """
-        \(eventLines)
+        \(eventLines)\(truncationNotice)
 
         [INTERNAL — DO NOT SHOW TO USER — use only for update/delete tool calls]
         \(idSection)

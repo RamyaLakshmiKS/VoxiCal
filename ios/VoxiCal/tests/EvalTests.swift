@@ -8,4 +8,9 @@ final class EvalTests: XCTestCase {
         // natural variance. Failing 3+ indicates a regression.
         XCTAssertLessThanOrEqual(failed, 2, "\(failed) eval(s) failed (threshold: 2) — check console output above for details")
     }
+
+    func testReadRetrieveSuite() async throws {
+        let (_, failed) = await runReadRetrieveSuite()
+        XCTAssertEqual(failed, 0, "\(failed) read/retrieve eval(s) failed — see console for details")
+    }
 }
