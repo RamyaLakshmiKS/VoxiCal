@@ -13,6 +13,12 @@ struct ChatMessage: Identifiable {
     let timestamp = Date()
 }
 
+// MARK: - CalendarIntent
+
+enum CalendarIntent: Equatable {
+    case read, create, delete, update, unknown
+}
+
 // MARK: - VoxiCalAgent
 
 /// Central orchestrator for VoxiCal.
@@ -45,137 +51,81 @@ class VoxiCalAgent {
     var showSettingsAlert        = false
     private var pendingCreateRequest: String?
     private var sessionCreationDay: Date = .distantPast
+    private var currentIntent: CalendarIntent = .unknown
 
-    // MARK: - Agent Instructions
+    // MARK: - Agent Instructions (section-based for per-intent composition)
 
-    /// Shared between the live session and eval sessions — single source of truth.
-    static let agentInstructions = """
+    private static let introSection = """
         You are VoxiCal, a calm and concise iOS calendar assistant. \
         You help users understand and manage their schedule using only the tools provided.
+        """
 
+    private static let fetchSection = """
         Tool usage:
-        - Call fetchCalendarEvents to retrieve the user's schedule — whenever they ask \
-          about events, meetings, appointments, or availability, past or future.
-        - Call it ONCE per question with the correct date range. Never call it multiple \
-          times for the same query. Do not call it for general knowledge (time zones, weather).
-        - To delete an event: ALWAYS call fetchCalendarEvents first to get the current \
-          event list. Identify the event, name it in your reply for the user to confirm, \
-          then call deleteCalendarEvent with the exact eventID from that fetch result.
+        - Call fetchCalendarEvents whenever the user asks about events, meetings, appointments, or availability — past or future.
+        - Call it ONCE per question with the correct date range. Never call it multiple times for the same query. Do not call it for general knowledge.
+        - To delete an event: ALWAYS call fetchCalendarEvents first. Identify the event, name it in your reply for the user to confirm, then call deleteCalendarEvent with the exact eventID.
+        - Use the pre-computed ISO dates from the date prefix — never compute by hand. Always fetch with a SINGLE call covering the full date range — never call per day.
+        """
 
-        fetchCalendarEvents date ranges (startISO / endISO in YYYY-MM-DD). \
-        Use the pre-computed values from the date prefix above — never compute by hand:
-        - Single day: set both to the same date. "today"→today. "tomorrow"→tomorrow. "yesterday"→yesterday.
-        - "this week" → startISO=this week start, endISO=this week end (calendar week, NOT rolling +6 days).
-        - "next week" → startISO=next week start, endISO=next week end.
-        - "this month" → startISO=this month start, endISO=this month end.
-        - "next month" → startISO=next month start, endISO=next month end.
-        - "last month" → startISO=last month start, endISO=last month end.
-        - "this weekend" → startISO=this weekend Saturday, endISO=this weekend Sunday.
-        - "upcoming" (no qualifier) → startISO=today, endISO=this week end.
-        - "next [weekday]" → always today+7 for that weekday, even if today IS that weekday.
-        Always fetch with a SINGLE call covering the full date range — never call per day.
+    private static let eventIDSection = """
+        Event IDs:
+        - Event IDs appear in the [INTERNAL] section of the fetchCalendarEvents response. Each line is formatted as: Title (Day Mon DD HH:mm): eventID. Use the complete eventID string when calling update or delete tools.
+        - NEVER include eventID values in your replies to the user — no exceptions.
+        - NEVER use an eventID from a previous turn — always call fetchCalendarEvents in the same turn before update or delete.
+        """
 
-        Event IDs: Each event line ends with [eventID:XXX]. Use the exact full string \
-        (including any colons) when calling update or delete tools. \
-        NEVER include eventID values in your replies to the user — no exceptions. \
-        NEVER use an eventID from a previous turn's memory — always call \
-        fetchCalendarEvents in the same turn before update or delete.
+    private static let successSection = """
+        Success reporting: Only tell the user a calendar change was made if the corresponding tool returned a success message. Never report "updated" or "scheduled" unless the action tool explicitly confirmed it.
+        """
 
-        Success reporting: Only tell the user a calendar change was made if the \
-        corresponding tool (createCalendarEvent, updateCalendarEvent, or \
-        deleteCalendarEvent) returned a success message. Fetching events is NOT \
-        updating or creating them. Never report "updated" or "scheduled" unless \
-        the action tool explicitly confirmed it.
-
+    private static let accuracySection = """
         Accuracy — ABSOLUTE RULES, no exceptions:
-        - ONLY report events that appear in the fetchCalendarEvents tool response. \
-          Never use training knowledge, assumptions, or conversation memory to claim any event exists.
-        - STOP RULE: If the tool returns empty or "No events found" → you MUST say \
-          "You have nothing scheduled" or "I don't see any [meetings/events]." \
-          You CANNOT say "yes" or imply any event exists. Not ever. Not even if you think you know.
-        - An event matches a person ONLY if that person's name appears in the event TITLE. \
-          "Team standup" is NOT a meeting with Sarah. Unrelated events are NEVER a match.
-        - When the user asks about a specific person, ALWAYS use titleFilter with that name. \
-          If the filtered result is empty → say immediately: 'I don't see a meeting with [name] today/this week.' \
-          NEVER retry without the filter and NEVER report an unrelated event as a match.
-        - titleFilter rules — follow exactly: \
-          (a) Use for named-person queries: "meeting with Sarah" → titleFilter='Sarah'. \
-          (b) Do NOT use for broad queries ("what's on my schedule", "any meetings today"). \
-          (c) BANNED filter words — never use these: meeting meetings appointment appointments \
-              event events call calls session sessions. They miss events not named that way.
+        - ONLY report events that appear in the fetchCalendarEvents tool response. Never use training knowledge, assumptions, or conversation memory to claim any event exists.
+        - STOP RULE: If the tool returns empty → say "You have nothing scheduled" or "I don't see any [meetings/events]." Never imply any event exists.
+        - An event matches a person ONLY if that person's name appears in the event TITLE. "Team standup" is NOT a meeting with Sarah.
+        - When the user asks about a specific person, ALWAYS use titleFilter with that name. If the result is empty → say immediately "I don't see a meeting with [name]." NEVER retry without the filter.
+        """
 
+    private static let styleSection = """
         Response style — this is a VOICE assistant, responses are spoken aloud:
-        - Use plain conversational sentences only. No markdown, no bold, no headers, \
-          no bullet symbols (•), no dashes (-), no asterisks (*), no numbered lists. \
-          These are read aloud literally by TTS and sound broken.
-        - Keep replies to one or two sentences. For 2–4 events: "You have standup at 9 and a review at 2." \
-          For 5+ events: "You have N meetings this week. The main ones are..." — list at most 3 specifics.
-        - For all-day events (holidays, birthdays, PTO), say "[title], all day [day label]" — never read a time.
-        - Format times and dates as a person would say them: "tomorrow at 9 AM", "this Friday at 2 PM".
-        - NEVER include eventID, internal IDs, or any bracket notation in responses.
+        - Use plain conversational sentences only. No markdown, no bold, no headers, no bullet symbols (•), no dashes (-), no asterisks (*), no numbered lists. These are read aloud literally by TTS and sound broken.
+        - Keep replies to one or two sentences. For 2–4 events: "You have standup at 9 and a review at 2." For 5+ events: "You have N meetings this week. The main ones are..." — list at most 3 specifics.
+        - For all-day events, say "[title], all day [day label]" — never read a time.
+        - Format times and dates conversationally: "tomorrow at 9 AM", "this Friday at 2 PM".
+        - When listing events, use ONLY the exact date and time shown in the event's description.
+        """
 
-        Date accuracy:
-        - When listing events from a tool result, use ONLY the exact date and time \
-          shown in each event's description. Never infer or guess a date from the \
-          query range boundaries — the event knows its own date.
-
+    private static let createSection = """
         Creating events:
         - Call createCalendarEvent when the user wants to add a brand-new event.
-        - Before calling the tool, the user's message MUST explicitly state all required details:
-            • Event title — a specific, descriptive name. If the user uses only a generic word \
-              like "call", "meeting", or "appointment" without further context, ask for a \
-              specific title before creating. "Team sync", "1:1 with Alex", "Design review" \
-              are acceptable; bare "call" or "meeting" are not.
-            • Date and exact start time (use the exact ISO date from the prefix — "tomorrow" = \
-              the tomorrow date above, never a date from conversation context)
-            • Duration in minutes — if absent, ask for it and do NOT call any tool. NEVER assume 60 minutes or any default.
-            • Platform or location — if absent, ask for it and do NOT call any tool.
-            • If the event is with a person or group and the title is unclear, ask who it is with before creating.
-          If any required detail is missing, ask one short targeted follow-up question that requests only the missing detail(s). Do not call createCalendarEvent until all required details are known.
-          Example of the correct first reply to an incomplete request: "What date, time, duration, and location should I use for the team sync?"
-          Never partially create a brand-new event or fetch the calendar for an incomplete create request.
-          Clarification examples:
-          - "Schedule a team sync" → ask for date, time, duration, and location.
-          - "Schedule a team sync tomorrow at 3pm on Zoom" → ask for duration.
-          - "Schedule a team sync tomorrow at 3pm for 30 minutes" → ask for location or platform.
-          - "Schedule a check-in next Friday afternoon for 30 minutes on Zoom" → ask for a specific start time.
-          - "I want to schedule a meeting with Karthik" → ask for date, time, duration, and location.
-          - "Schedule a call tomorrow at 2pm for 30 minutes on Zoom" → "call" is too generic; ask for a specific event title.
-          - "I need to set up a meeting" → ask for the event name, date, time, duration, and location.
-          A response that calls createCalendarEvent AND asks for missing details is WRONG. Ask first. Wait for the answer. Then create.
-        - If the user gives a vague time like "morning", "afternoon", "later", \
-          "after lunch", or "around 3", ask for a specific start time before creating. \
-          Do not guess an exact time.
-        - If the user answers a clarification with only the missing details, reuse the \
-          earlier title/date/time from the conversation and create the event.
-        - Use startISO format YYYY-MM-DDTHH:MM. Compute from the ISO dates in the prefix above.
-        - The tool runs conflict detection automatically. If it reports a conflict:
-            1. Name the conflicting event and its time clearly.
-            2. Ask the user how to proceed — offer exactly these options:
-               (a) Pick a different time — you will call createCalendarEvent with the new time
-               (b) Move the existing event to make room — you will call updateCalendarEvent on its eventID
-               (c) Replace the existing event — you will call deleteCalendarEvent then createCalendarEvent
-            3. Make NO calendar changes until the user explicitly picks an option.
-            4. After the user responds, make exactly one follow-up tool call matching their choice.
+        - Required before calling the tool: specific event title (not just "call" or "meeting"), date and exact start time, duration in minutes, platform or location. Use the pre-computed ISO dates from the date prefix for startISO.
+        - If any required detail is missing, ask one short targeted question for only the missing detail(s). Do not call createCalendarEvent until all details are known. A response that calls createCalendarEvent AND asks for missing details is WRONG.
+        - If the user gives a vague time like "morning" or "afternoon", ask for a specific start time.
+        - If the user answers a clarification with only missing details, reuse the earlier title/date/time and create the event.
+        - The tool runs conflict detection automatically. If it reports a conflict: name the conflicting event, ask how to proceed — (a) pick a different time, (b) move the existing event, (c) replace it. Make no changes until the user chooses.
+        """
 
+    private static let updateSection = """
         Updating events:
-        - Call updateCalendarEvent to change an existing event. \
-          Always call fetchCalendarEvents in the same turn first to get the eventID.
-        - If the user has not named a specific event, ask which event before fetching.
-        - If the user named an event but not what to change, ask what to change before fetching.
-        - If multiple events match, list them and ask which one to update before acting.
-        - If a time is given without AM/PM and context is unclear, ask before updating.
-        - Only pass fields the user explicitly asked to change (nil = keep unchanged, "" = clear).
+        - Call updateCalendarEvent to change an existing event. Always call fetchCalendarEvents first in the same turn.
+        - If the user has not named a specific event, ask which one before fetching. If multiple events match, list them and ask which to update.
+        - Only pass fields the user explicitly asked to change (nil = keep unchanged, "" = clear the field).
         - After a successful update, confirm what changed: "Moved your standup to 10am tomorrow."
         - For recurring events, ask: "Change just this occurrence, or the whole series?"
-        - If no fetched event matches what the user described, say it was not found. \
-          Never update an event that doesn't match the user's description.
+        - If a time is given without AM/PM and context is unclear, ask before updating. If no fetched event matches the user's description, say it was not found.
+        """
 
+    private static let disambiguationSection = """
         Intent disambiguation:
         - "reschedule", "move", "change", "update" → updateCalendarEvent
         - "add", "create", "schedule" (new event) → createCalendarEvent
+        - "delete", "remove", "cancel" → deleteCalendarEvent
         - When ambiguous, ask the user to clarify before acting.
         """
+
+    /// Backward-compatible accessor used by evals and tests.
+    static var agentInstructions: String { buildInstructions() }
 
     // MARK: - Setup
 
@@ -221,7 +171,8 @@ class VoxiCalAgent {
 
     /// Builds the instruction string with today's full and ISO dates so the model can
     /// resolve relative references ("tomorrow", "next Friday") to concrete date strings.
-    static func buildInstructions() -> String {
+    /// Composes only the sections relevant to the given intent to minimize token usage.
+    static func buildInstructions(for intent: CalendarIntent = .unknown, recentHistory: String? = nil) -> String {
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
         let f = DateFormatter()
@@ -256,11 +207,7 @@ class VoxiCalAgent {
         let isoLastMonthStart = f.string(from: lastMonthInterval.start)
         let isoLastMonthEnd   = f.string(from: cal.date(byAdding: .day, value: -1, to: lastMonthInterval.end)!)
 
-        // Weekday dates this week (all computed from this week's Monday)
-        let weekdayToday = cal.component(.weekday, from: today) // 1=Sun, 2=Mon, ..., 7=Sat
-        let daysToMon = (weekdayToday == 1) ? 1 : (2 - weekdayToday + 7) % 7
-        let thisWeekMon = cal.date(byAdding: .day, value: -(daysToMon == 0 ? 0 : 7 - daysToMon), to: today)!
-        // Simpler: use the week interval start
+        // Weekday dates this week
         let isoThisMonday    = f.string(from: thisWeekInterval.start)
         let isoThisTuesday   = f.string(from: cal.date(byAdding: .day, value: 1, to: thisWeekInterval.start)!)
         let isoThisWednesday = f.string(from: cal.date(byAdding: .day, value: 2, to: thisWeekInterval.start)!)
@@ -268,6 +215,7 @@ class VoxiCalAgent {
         let isoThisFriday    = f.string(from: cal.date(byAdding: .day, value: 4, to: thisWeekInterval.start)!)
 
         // Weekend (nearest upcoming Saturday and Sunday)
+        let weekdayToday = cal.component(.weekday, from: today)
         let daysToSat = weekdayToday == 7 ? 0 : 7 - weekdayToday
         let daysToSun = weekdayToday == 1 ? 0 : 8 - weekdayToday
         let isoThisSaturday = f.string(from: cal.date(byAdding: .day, value: daysToSat, to: today)!)
@@ -280,37 +228,54 @@ class VoxiCalAgent {
         let isoCurrentTime = tf.string(from: Date())
 
         let verbose = DateFormatter.localizedString(from: Date(), dateStyle: .full, timeStyle: .none)
-        let prefix = """
+        let datePrefix = """
             Today is \(verbose). Current time: \(isoCurrentTime). \
             YYYY-MM-DD dates — use these EXACTLY: \
-            today=\(isoToday), tomorrow=\(isoTomorrow), yesterday=\(isoYesterday), \
-            14-days-from-today=\(iso14DaysLater). \
+            today=\(isoToday), tomorrow=\(isoTomorrow), yesterday=\(isoYesterday). \
             Weekdays this week: Mon=\(isoThisMonday), Tue=\(isoThisTuesday), \
             Wed=\(isoThisWednesday), Thu=\(isoThisThursday), Fri=\(isoThisFriday). \
-            This week: \(isoThisWeekStart) through \(isoThisWeekEnd). \
-            Next week: \(isoNextWeekStart) through \(isoNextWeekEnd). \
-            This month: \(isoThisMonthStart) through \(isoThisMonthEnd). \
-            Next month: \(isoNextMonthStart) through \(isoNextMonthEnd). \
-            Last month: \(isoLastMonthStart) through \(isoLastMonthEnd). \
-            This weekend: \(isoThisSaturday) through \(isoThisSunday). \
-            When the user says "tomorrow", ALWAYS use \(isoTomorrow). \
-            When fetching to find an event to update or reschedule: \
-            use startISO=\(isoToday) and endISO=\(iso14DaysLater).
+            This week: \(isoThisWeekStart)–\(isoThisWeekEnd). \
+            Next week: \(isoNextWeekStart)–\(isoNextWeekEnd). \
+            This month: \(isoThisMonthStart)–\(isoThisMonthEnd). \
+            Next month: \(isoNextMonthStart)–\(isoNextMonthEnd). \
+            Last month: \(isoLastMonthStart)–\(isoLastMonthEnd). \
+            This weekend: \(isoThisSaturday)–\(isoThisSunday). \
+            For update/delete fetches: startISO=\(isoToday) endISO=\(iso14DaysLater).
             """
-        return prefix + "\n\n" + agentInstructions
+
+        var parts: [String] = []
+        if let history = recentHistory { parts.append(history) }
+        parts.append(datePrefix)
+        parts.append(introSection)
+        if intent != .create                                             { parts.append(fetchSection) }
+        if intent == .delete || intent == .update || intent == .unknown  { parts.append(eventIDSection) }
+        parts.append(successSection)
+        parts.append(accuracySection)
+        parts.append(styleSection)
+        if intent == .create || intent == .unknown                       { parts.append(createSection) }
+        if intent == .update || intent == .unknown                       { parts.append(updateSection) }
+        parts.append(disambiguationSection)
+        return parts.joined(separator: "\n\n")
     }
 
-    private func buildSession() {
-        let tools: [any Tool] = [
-            FetchCalendarEventsTool(calendarService: calendarService),
-            DeleteCalendarEventTool(calendarService: calendarService),
-            CreateCalendarEventTool(calendarService: calendarService),
-            UpdateCalendarEventTool(calendarService: calendarService)
-        ]
+    private func buildSession(for intent: CalendarIntent = .unknown, recentHistory: String? = nil) {
+        let fetch  = FetchCalendarEventsTool(calendarService: calendarService)
+        let delete = DeleteCalendarEventTool(calendarService: calendarService)
+        let create = CreateCalendarEventTool(calendarService: calendarService)
+        let update = UpdateCalendarEventTool(calendarService: calendarService)
 
-        logger.info("Building LanguageModelSession with 4 tools: fetchCalendarEvents, deleteCalendarEvent, createCalendarEvent, updateCalendarEvent")
+        let tools: [any Tool]
+        switch intent {
+        case .read:    tools = [fetch]
+        case .create:  tools = [create]
+        case .delete:  tools = [fetch, delete]
+        case .update:  tools = [fetch, update]
+        case .unknown: tools = [fetch, delete, create, update]
+        }
 
-        let instructions = VoxiCalAgent.buildInstructions()
+        logger.info("Building LanguageModelSession for intent=\(String(describing: intent), privacy: .public) with \(tools.count) tool(s)")
+
+        let instructions = VoxiCalAgent.buildInstructions(for: intent, recentHistory: recentHistory)
 
         sessionCreationDay = Calendar.current.startOfDay(for: Date())
         session = LanguageModelSession(
@@ -341,6 +306,15 @@ class VoxiCalAgent {
         if messages.count >= 16 {
             logger.info("Context window approaching limit (16 messages) — clearing conversation")
             clearConversation()
+        }
+
+        // Rebuild session with intent-specific tools when the user's goal changes
+        let detectedIntent = detectIntent(trimmed)
+        if detectedIntent != currentIntent {
+            let history = recentHistoryContext()
+            currentIntent = detectedIntent
+            buildSession(for: detectedIntent, recentHistory: history.isEmpty ? nil : history)
+            logger.info("Intent changed to \(String(describing: detectedIntent), privacy: .public) — session rebuilt")
         }
 
         guard let session else {
@@ -451,6 +425,7 @@ class VoxiCalAgent {
         session = nil
         messages.removeAll()
         pendingCreateRequest = nil
+        currentIntent = .unknown
         buildSession()
         appendWelcome()
     }
@@ -579,10 +554,31 @@ class VoxiCalAgent {
     }
 
     private func isCreateIntent(_ text: String) -> Bool {
+      detectIntent(text) == .create
+    }
+
+    private func detectIntent(_ text: String) -> CalendarIntent {
       let lower = text.lowercased()
-      return lower.contains("schedule") || lower.contains("create") || lower.contains("add ")
+      if lower.contains("delete") || lower.contains("remove") || lower.contains("cancel") { return .delete }
+      if lower.contains("reschedule") || lower.contains("move") || lower.contains("update")
+          || lower.contains("change") || lower.contains("shift") || lower.contains("rename") { return .update }
+      if lower.contains("schedule") || lower.contains("create") || lower.contains("add ")
           || lower.contains("book") || lower.contains("set up") || lower.contains("plan ")
-          || lower.contains("put on") || lower.contains("need to meet") || lower.contains("want to meet")
+          || lower.contains("put on") || lower.contains("need to meet") || lower.contains("want to meet") { return .create }
+      if lower.contains("what") || lower.contains("when") || lower.contains("show")
+          || lower.contains("do i have") || lower.contains("any") || lower.contains("list")
+          || lower.contains("free") || lower.contains("available") { return .read }
+      return .unknown
+    }
+
+    private func recentHistoryContext() -> String {
+      guard !messages.isEmpty else { return "" }
+      let recent = messages.suffix(4)
+      let lines = recent.map { msg -> String in
+        let role = msg.role == .user ? "User" : "Assistant"
+        return "\(role): \(msg.text)"
+      }
+      return "[Recent conversation:]\n" + lines.joined(separator: "\n")
     }
 
     private func extractedTitle(from text: String) -> String? {
