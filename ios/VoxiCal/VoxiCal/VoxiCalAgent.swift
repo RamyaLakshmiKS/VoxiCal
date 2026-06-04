@@ -2,17 +2,6 @@ import Foundation
 import FoundationModels
 import os.log
 
-// MARK: - ChatMessage
-
-struct ChatMessage: Identifiable {
-    enum Role { case user, assistant }
-
-    let id = UUID()
-    let role: Role
-    let text: String
-    let timestamp = Date()
-}
-
 // MARK: - CalendarIntent
 
 enum CalendarIntent: Equatable {
@@ -41,6 +30,11 @@ class VoxiCalAgent {
     // MARK: - LLM Session
 
     private var session: LanguageModelSession?
+
+    // MARK: - Conversation Archive
+
+    private var chatSessionID: String
+    private var archive: ConversationArchive
 
     // MARK: - UI State
 
@@ -136,6 +130,14 @@ class VoxiCalAgent {
 
     /// Backward-compatible accessor used by evals and tests.
     static var agentInstructions: String { buildInstructions() }
+
+    // MARK: - Init
+
+    init() {
+        let id = UUID().uuidString
+        chatSessionID = id
+        archive = ConversationArchive(sessionID: id)
+    }
 
     // MARK: - Setup
 
@@ -273,14 +275,15 @@ class VoxiCalAgent {
         let delete = DeleteCalendarEventTool(calendarService: calendarService)
         let create = CreateCalendarEventTool(calendarService: calendarService)
         let update = UpdateCalendarEventTool(calendarService: calendarService)
+        let search = SearchArchiveTool(archive: archive)
 
-        let tools: [any Tool]
+        var tools: [any Tool]
         switch intent {
-        case .read:    tools = [fetch]
-        case .create:  tools = [create]
-        case .delete:  tools = [fetch, delete]
-        case .update:  tools = [fetch, update]
-        case .unknown: tools = [fetch, delete, create, update]
+        case .read:    tools = [fetch, search]
+        case .create:  tools = [create, search]
+        case .delete:  tools = [fetch, delete, search]
+        case .update:  tools = [fetch, update, search]
+        case .unknown: tools = [fetch, delete, create, update, search]
         }
 
         logger.info("Building LanguageModelSession for intent=\(String(describing: intent), privacy: .public) with \(tools.count) tool(s)")
@@ -312,10 +315,12 @@ class VoxiCalAgent {
 
         logger.info("[USER] \(trimmed, privacy: .public)")
 
-        // Auto-reset conversation after 16 messages (8 turns) to prevent context window overflow
-        if messages.count >= 16 {
-            logger.info("Context window approaching limit (16 messages) — clearing conversation")
-            clearConversation()
+        // Archive when estimated token usage approaches the 4,096-token context window.
+        // ~4 chars per token; reserve ~1,100 tokens for the upcoming response + tool calls.
+        if estimatedSessionTokens() > 3_000 {
+            logger.info("Context window approaching limit (~3000 estimated tokens) — archiving")
+            try? archive.save(messages)
+            session = nil   // force a fresh session; messages UI remains unchanged
         }
 
         // Rebuild session with intent-specific tools when the user's goal changes
@@ -403,6 +408,21 @@ class VoxiCalAgent {
             }
         }
 
+        // If the context window was actually exceeded mid-turn, archive and retry silently.
+        // The messages UI is never trimmed — only the session is reset.
+        if responseText == nil, let error = lastError {
+            let desc = error.localizedDescription.lowercased()
+            if desc.contains("context") || desc.contains("token") || desc.contains("exceeded") {
+                logger.warning("Context window exceeded — archiving and rebuilding session silently")
+                try? archive.save(messages)
+                buildSession(for: currentIntent, recentHistory: nil)
+                if let rebuiltSession = self.session,
+                   let response = try? await rebuiltSession.respond(to: trimmed) {
+                    responseText = response.content
+                }
+            }
+        }
+
         if let text = responseText {
             logger.info("[AGENT] \(text, privacy: .public)")
             messages.append(ChatMessage(role: .assistant, text: text))
@@ -428,10 +448,14 @@ class VoxiCalAgent {
 
     // MARK: - Conversation Reset
 
-    /// Wipes the chat history and creates a new LanguageModelSession.
-    /// Necessary when the session transcript grows close to the 4,096-token limit.
+    /// Wipes the chat history and starts a fresh session.
+    /// Deletes all archived conversation files from this and any prior session
+    /// to ensure complete isolation between chats.
     func clearConversation() {
         ttsService.stop()
+        archive.deleteAll()
+        chatSessionID = UUID().uuidString
+        archive = ConversationArchive(sessionID: chatSessionID)
         session = nil
         messages.removeAll()
         pendingCreateRequest = nil
@@ -587,6 +611,14 @@ class VoxiCalAgent {
           || lower.contains("do i have") || lower.contains("any") || lower.contains("list")
           || lower.contains("free") || lower.contains("available") { return .read }
       return .unknown
+    }
+
+    /// Rough token estimate: instructions + all visible messages, at ~4 chars per token.
+    /// Used to decide when to proactively archive before the 4,096-token limit is hit.
+    private func estimatedSessionTokens() -> Int {
+        let instructionChars = VoxiCalAgent.buildInstructions(for: currentIntent).count
+        let messageChars = messages.reduce(0) { $0 + $1.text.count }
+        return (instructionChars + messageChars) / 4
     }
 
     private func recentHistoryContext() -> String {
