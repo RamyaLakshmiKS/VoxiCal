@@ -230,27 +230,28 @@ private struct IdleInputRow: View {
                 .submitLabel(.send)
                 .onSubmit { sendText() }
 
-            // Mic button — starts voice recording
-            Button {
-                fieldFocus.wrappedValue = false
-                Task { await startRecording() }
-            } label: {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 19, weight: .medium))
-                    .frame(width: 44, height: 44)
-                    .background(Color(.tertiarySystemBackground))
-                    .clipShape(Circle())
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(viewModel.isProcessing)
-
-            // Send button — appears only when there is text
+            // Mic and send are mutually exclusive — iMessage dictation style
             if canSend {
                 Button { sendText() } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 36))
                         .foregroundStyle(Color.accentColor)
                 }
+                .transition(.scale(scale: 0.7).combined(with: .opacity))
+            } else {
+                // Mic button — accent fill makes it the clear primary action
+                Button {
+                    fieldFocus.wrappedValue = false
+                    Task { await startRecording() }
+                } label: {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 19, weight: .medium))
+                        .frame(width: 44, height: 44)
+                        .foregroundStyle(.white)
+                        .background(Color.accentColor)
+                        .clipShape(Circle())
+                }
+                .disabled(viewModel.isProcessing)
                 .transition(.scale(scale: 0.7).combined(with: .opacity))
             }
         }
@@ -292,103 +293,81 @@ private struct RecordingInputRow: View {
     private var hasTranscript: Bool { !speech.liveTranscript.isEmpty }
 
     var body: some View {
-        VStack(spacing: 10) {
+        HStack(spacing: 10) {
 
-            // Live transcript preview + pulsing mic indicator
-            HStack(alignment: .center, spacing: 10) {
+            // Cancel — discard and return to idle
+            Button(role: .destructive) {
+                speech.cancelRecording()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(Color(.tertiaryLabel))
+            }
+
+            // Transcript / listening indicator — fills available width
+            HStack(spacing: 8) {
+                // Pulsing red dot: iMessage-style active-recording indicator
+                if !isPaused {
+                    RecordingPulseView(scale: $pulseScale, opacity: $pulseOpacity)
+                }
+
                 Text(transcriptPlaceholder)
                     .italic(!hasTranscript)
                     .foregroundStyle(hasTranscript ? .primary : .secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(Color(.tertiarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-
-                // Ripple pulse — only visible while actively recording (not paused)
-                if !isPaused {
-                    ZStack {
-                        Circle()
-                            .fill(Color.red.opacity(0.35))
-                            .frame(width: 44, height: 44)
-                            .scaleEffect(pulseScale)
-                            .opacity(pulseOpacity)
-
-                        Image(systemName: "mic.fill")
-                            .foregroundStyle(.red)
-                            .font(.system(size: 18, weight: .medium))
-                            .frame(width: 44, height: 44)
-                            .background(Color(.tertiarySystemBackground))
-                            .clipShape(Circle())
-                    }
-                    .onAppear {
-                        withAnimation(.easeOut(duration: 1.0).repeatForever(autoreverses: false)) {
-                            pulseScale   = 1.9
-                            pulseOpacity = 0.0
-                        }
-                    }
-                    .onDisappear {
-                        pulseScale   = 1.0
-                        pulseOpacity = 1.0
-                    }
-                }
+                    .lineLimit(3)
+                    .animation(.easeInOut(duration: 0.15), value: speech.liveTranscript)
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color(.tertiarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
 
-            // WhatsApp-style action row: Pause/Resume · Delete · Send
-            HStack(spacing: 10) {
-
-                // Pause / Resume
-                Button {
-                    if isPaused {
-                        try? speech.resumeRecording()
-                    } else {
-                        speech.pauseRecording()
-                    }
-                } label: {
-                    Label(
-                        isPaused ? "Resume" : "Pause",
-                        systemImage: isPaused ? "play.fill" : "pause.fill"
-                    )
-                    .font(.subheadline.weight(.medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .foregroundStyle(.primary)
-                }
-
-                // Delete — discards recording without sending
-                Button(role: .destructive) {
-                    speech.cancelRecording()
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                        .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(Color(.secondarySystemBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-
-                // Send — finalises recording and routes transcript through the LLM
-                Button {
-                    Task { await viewModel.sendVoiceInput() }
-                } label: {
-                    Label("Send", systemImage: "arrow.up")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .foregroundStyle(.white)
-                        .background(hasTranscript ? Color.accentColor : Color.secondary)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .disabled(!hasTranscript)
+            // Send — routes transcript through the LLM
+            Button {
+                Task { await viewModel.sendVoiceInput() }
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(hasTranscript ? Color.accentColor : Color(.tertiaryLabel))
             }
+            .disabled(!hasTranscript)
         }
     }
 
     private var transcriptPlaceholder: String {
         if hasTranscript { return speech.liveTranscript }
-        return isPaused ? "Paused — tap Resume to continue" : "Listening…"
+        return isPaused ? "Paused" : "Listening…"
+    }
+}
+
+// MARK: - RecordingPulseView
+
+private struct RecordingPulseView: View {
+    @Binding var scale: CGFloat
+    @Binding var opacity: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.red.opacity(0.35))
+                .frame(width: 18, height: 18)
+                .scaleEffect(scale)
+                .opacity(opacity)
+            Circle()
+                .fill(Color.red)
+                .frame(width: 8, height: 8)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.0).repeatForever(autoreverses: false)) {
+                scale   = 2.2
+                opacity = 0.0
+            }
+        }
+        .onDisappear {
+            scale   = 1.0
+            opacity = 1.0
+        }
     }
 }
 
