@@ -124,6 +124,14 @@ class VoxiCalAgent {
         - When ambiguous, ask the user to clarify before acting.
         """
 
+    private static let transcriptionSection = """
+        Speech-to-text transcription errors:
+        - Input comes from voice transcription and may contain substitution errors. Use context and phonetics to infer actual intent.
+        - Common preposition substitutions: "at" instead of "with" (e.g., "meeting at John" means "meeting with John").
+        - Common homophone/mishearing substitutions: "CAD" → "cat", "too" → "two", proper names may be phonetically approximated.
+        - When a calendar event is found by a tool, always use its exact title from the tool response in your reply — never echo back a mistranscription. For example, if the user says "delete meeting with CAD" but the calendar event is titled "Meeting with Cat", refer to it as "Meeting with Cat".
+        """
+
     /// Backward-compatible accessor used by evals and tests.
     static var agentInstructions: String { buildInstructions() }
 
@@ -145,7 +153,6 @@ class VoxiCalAgent {
             errorMessage = error.localizedDescription
         }
 
-        buildSession()
         appendWelcome()
     }
 
@@ -255,6 +262,7 @@ class VoxiCalAgent {
         if intent == .create || intent == .unknown                       { parts.append(createSection) }
         if intent == .update || intent == .unknown                       { parts.append(updateSection) }
         parts.append(disambiguationSection)
+        parts.append(transcriptionSection)
         return parts.joined(separator: "\n\n")
     }
 
@@ -310,7 +318,7 @@ class VoxiCalAgent {
 
         // Rebuild session with intent-specific tools when the user's goal changes
         let detectedIntent = detectIntent(trimmed)
-        if detectedIntent != currentIntent {
+        if detectedIntent != currentIntent || session == nil {
             let history = recentHistoryContext()
             currentIntent = detectedIntent
             buildSession(for: detectedIntent, recentHistory: history.isEmpty ? nil : history)
@@ -426,7 +434,6 @@ class VoxiCalAgent {
         messages.removeAll()
         pendingCreateRequest = nil
         currentIntent = .unknown
-        buildSession()
         appendWelcome()
     }
 
@@ -615,16 +622,19 @@ class VoxiCalAgent {
 
       for eventType in eventTypes {
         guard lower.contains(eventType) else { continue }
-        // Find "with [Name]" anywhere in the text
-        guard let nameRange = lower.range(of: #"\bwith\s+([A-Za-z][A-Za-z]+)"#, options: .regularExpression),
-              let captureRange = lower.range(of: #"(?<=\bwith\s)[A-Za-z][A-Za-z]+"#, options: .regularExpression)
-        else { continue }
-        let _ = nameRange  // nameRange confirms the pattern exists
-        let name = String(lower[captureRange])
-        guard !nonPersonWords.contains(name) else { continue }
-        let nameCapitalized = name.prefix(1).uppercased() + name.dropFirst()
-        let typeCapitalized = eventType.prefix(1).uppercased() + eventType.dropFirst()
-        return "\(typeCapitalized) with \(nameCapitalized)"
+        // Find "with [Name]" or "at [Name]" — STT often substitutes "at" for "with"
+        for prep in ["with", "at"] {
+          let pattern = "\\b\(prep)\\s+([A-Za-z][A-Za-z]+)"
+          guard let regex = try? NSRegularExpression(pattern: pattern),
+                let match = regex.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)),
+                let range = Range(match.range(at: 1), in: lower)
+          else { continue }
+          let name = String(lower[range])
+          guard !nonPersonWords.contains(name) else { continue }
+          let nameCapitalized = name.prefix(1).uppercased() + name.dropFirst()
+          let typeCapitalized = eventType.prefix(1).uppercased() + eventType.dropFirst()
+          return "\(typeCapitalized) with \(nameCapitalized)"
+        }
       }
 
       return nil
@@ -668,7 +678,12 @@ class VoxiCalAgent {
       // Block only when "around" is followed by a time pattern, not by a number+duration unit.
       let aroundModifiesDuration = lower.range(of: #"\baround\s+\d+\s*(?:hours?|hrs?|minutes?|mins?)"#, options: .regularExpression) != nil
       let aroundModifiesTime    = lower.range(of: #"\baround\s+\d"#, options: .regularExpression) != nil && !aroundModifiesDuration
-      if aroundModifiesTime { return nil }
+      if aroundModifiesTime {
+        // If the text also has a precise "at N am/pm" (e.g. from a follow-up clarification),
+        // trust that instead of blocking on the earlier vague "around" expression.
+        let hasPreciseTime = lower.range(of: #"\bat\s+(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s*[ap]m\b"#, options: .regularExpression) != nil
+        if !hasPreciseTime { return nil }
+      }
 
       let pattern = #"\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s*([ap]m)\b"#
       guard let match = lower.range(of: pattern, options: .regularExpression) else { return nil }

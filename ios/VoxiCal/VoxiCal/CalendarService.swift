@@ -149,10 +149,29 @@ class CalendarService {
 
     /// Deletes a single occurrence of the event identified by `id`.
     func deleteEvent(id: String) async throws {
-        guard let event = store.event(withIdentifier: id) else {
-            throw CalendarError.eventNotFound(id: id)
+        store.reset()
+
+        if let event = store.event(withIdentifier: id) {
+            try store.remove(event, span: .thisEvent, commit: true)
+            return
         }
-        try store.remove(event, span: .thisEvent, commit: true)
+
+        // After a remote calendar sync the store may prepend a calendar-specific
+        // prefix to the identifier (e.g. "calendarID:eventUUID"). Fall back to
+        // searching a ±7-day window for an event whose identifier ends with the
+        // UUID portion we originally stored.
+        let idSuffix    = id.components(separatedBy: ":").last ?? id
+        let windowStart = Date().addingTimeInterval(-7 * 86400)
+        let windowEnd   = Date().addingTimeInterval( 7 * 86400)
+        let predicate   = store.predicateForEvents(withStart: windowStart, end: windowEnd, calendars: nil)
+        if let event = store.events(matching: predicate).first(where: {
+            $0.eventIdentifier?.hasSuffix(idSuffix) == true
+        }) {
+            try store.remove(event, span: .thisEvent, commit: true)
+            return
+        }
+
+        throw CalendarError.eventNotFound(id: id)
     }
 
     // MARK: - Create
@@ -204,8 +223,23 @@ class CalendarService {
         notes: String?,
         recurrenceScope: EKSpan
     ) async throws -> CalendarEvent {
-        guard let event = store.event(withIdentifier: id) else {
-            throw CalendarError.eventNotFound(id: id)
+        store.reset()
+
+        let event: EKEvent
+        if let e = store.event(withIdentifier: id) {
+            event = e
+        } else {
+            // Fallback: sync may have prepended a calendar prefix to the identifier
+            let idSuffix    = id.components(separatedBy: ":").last ?? id
+            let windowStart = Date().addingTimeInterval(-7 * 86400)
+            let windowEnd   = Date().addingTimeInterval( 7 * 86400)
+            let predicate   = store.predicateForEvents(withStart: windowStart, end: windowEnd, calendars: nil)
+            guard let found = store.events(matching: predicate).first(where: {
+                $0.eventIdentifier?.hasSuffix(idSuffix) == true
+            }) else {
+                throw CalendarError.eventNotFound(id: id)
+            }
+            event = found
         }
 
         if let title { event.title = title }
