@@ -65,7 +65,7 @@ class VoxiCalAgent {
         - Call fetchCalendarEvents whenever the user asks about events, meetings, appointments, or availability — past or future.
         - Call it ONCE per question with the correct date range. Never call it multiple times for the same query. Do not call it for general knowledge.
         - To delete an event: ALWAYS call fetchCalendarEvents first. Identify the event, name it in your reply for the user to confirm, then call deleteCalendarEvent with the exact eventID.
-        - Use the pre-computed ISO dates from the date prefix — never compute by hand. Always fetch with a SINGLE call covering the full date range — never call per day.
+        - Use ONLY the pre-computed ISO dates from the date prefix above — never compute dates by hand. NEVER append timezone offsets (wrong: "2026-06-05T00:00:00-05:00"; correct: "2026-06-05"). Always fetch with a SINGLE call covering the full date range — never call per day.
         """
 
     private static let eventIDSection = """
@@ -73,6 +73,7 @@ class VoxiCalAgent {
         - Event IDs appear in the [INTERNAL] section of the fetchCalendarEvents response. Each line is formatted as: Title (Day Mon DD HH:mm): eventID. Use the complete eventID string when calling update or delete tools.
         - NEVER include eventID values in your replies to the user — no exceptions.
         - NEVER use an eventID from a previous turn — always call fetchCalendarEvents in the same turn before update or delete.
+        - NEVER guess, invent, or fabricate an eventID (e.g., "N/A", "event_123", or any placeholder). If you do not have a valid eventID returned by fetchCalendarEvents in this exact turn, call fetchCalendarEvents first.
         """
 
     private static let successSection = """
@@ -89,7 +90,7 @@ class VoxiCalAgent {
 
     private static let styleSection = """
         Response style — this is a VOICE assistant, responses are spoken aloud:
-        - Use plain conversational sentences only. No markdown, no bold, no headers, no bullet symbols (•), no dashes (-), no asterisks (*), no numbered lists. These are read aloud literally by TTS and sound broken.
+        - MANDATORY FORMATTING RULE — ABSOLUTELY NO MARKDOWN, ever. Do NOT use: bullet symbols (•, -, *), bold or italic asterisks (**word**, *word*), headers (#, ##), numbered lists (1. 2. 3.), or any other markdown syntax. Every character is read aloud by TTS and markdown sounds broken and unnatural when spoken. Always write in plain flowing prose.
         - Keep replies to one or two sentences. For 2–4 events: "You have standup at 9 and a review at 2." For 5+ events: "You have N meetings this week. The main ones are..." — list at most 3 specifics.
         - For all-day events, say "[title], all day [day label]" — never read a time.
         - Format times and dates conversationally: "tomorrow at 9 AM", "this Friday at 2 PM".
@@ -103,15 +104,16 @@ class VoxiCalAgent {
         - If any required detail is missing, ask one short targeted question for only the missing detail(s). Do not call createCalendarEvent until all details are known. A response that calls createCalendarEvent AND asks for missing details is WRONG.
         - If the user gives a vague time like "morning" or "afternoon", ask for a specific start time.
         - If the user answers a clarification with only missing details, reuse the earlier title/date/time and create the event.
-        - The tool runs conflict detection automatically. If it reports a conflict: name the conflicting event, ask how to proceed — (a) pick a different time, (b) move the existing event, (c) replace it. Make no changes until the user chooses.
+        - The tool runs conflict detection automatically. If it reports a conflict: name the conflicting event by its title and time in plain language only — never include any event ID. Offer the three options conversationally: (a) pick a different time for the new event, (b) reschedule the conflicting event, (c) replace the conflicting event. Never mention tool names (createCalendarEvent, updateCalendarEvent, etc.) to the user. Make no changes until the user chooses.
         """
 
     private static let updateSection = """
         Updating events:
         - Call updateCalendarEvent to change an existing event. Always call fetchCalendarEvents first in the same turn.
+        - NEVER call updateCalendarEvent with a placeholder, guessed, or stale event ID (e.g., "N/A", "event_123", or an ID from a prior turn). If you do not have a valid fresh eventID from fetchCalendarEvents called in this exact turn, fetch first.
         - If the user has not named a specific event, ask which one before fetching. If multiple events match, list them and ask which to update.
         - Only pass fields the user explicitly asked to change (nil = keep unchanged, "" = clear the field).
-        - After a successful update, confirm what changed: "Moved your standup to 10am tomorrow."
+        - After a successful update, confirm what changed conversationally: "Moved your standup to 10am tomorrow."
         - For recurring events, ask: "Change just this occurrence, or the whole series?"
         - If a time is given without AM/PM and context is unclear, ask before updating. If no fetched event matches the user's description, say it was not found.
         """
@@ -564,12 +566,21 @@ class VoxiCalAgent {
       detectIntent(text) == .create
     }
 
-    private func detectIntent(_ text: String) -> CalendarIntent {
+    func detectIntent(_ text: String) -> CalendarIntent {
       let lower = text.lowercased()
+      // Questions about past actions are not commands ("why did you delete", "did you move").
+      // Classify them as unknown so the full-tool session can reason about the conversation.
+      if lower.hasPrefix("why") || lower.contains("why did you")
+          || lower.hasPrefix("did you") || lower.hasPrefix("have you")
+          || lower.hasPrefix("what did you") || lower.contains("did you just")
+          || lower.contains("did you actually") {
+        return .unknown
+      }
       if lower.contains("delete") || lower.contains("remove") || lower.contains("cancel") { return .delete }
       if lower.contains("reschedule") || lower.contains("move") || lower.contains("update")
           || lower.contains("change") || lower.contains("shift") || lower.contains("rename") { return .update }
-      if lower.contains("schedule") || lower.contains("create") || lower.contains("add ")
+      let scheduleAsVerb = lower.range(of: #"\bschedule\s+(?:a|an|the|me|us|my)\b"#, options: .regularExpression) != nil
+      if scheduleAsVerb || lower.contains("create") || lower.contains("add ")
           || lower.contains("book") || lower.contains("set up") || lower.contains("plan ")
           || lower.contains("put on") || lower.contains("need to meet") || lower.contains("want to meet") { return .create }
       if lower.contains("what") || lower.contains("when") || lower.contains("show")
@@ -588,16 +599,27 @@ class VoxiCalAgent {
       return "[Recent conversation:]\n" + lines.joined(separator: "\n")
     }
 
-    private func extractedTitle(from text: String) -> String? {
+    func extractedTitle(from text: String) -> String? {
       let lower = text.lowercased()
 
-      // Named 1:1 pattern
-      if let range = lower.range(of: #"1:1 with [A-Za-z][A-Za-z\- ]+"#, options: .regularExpression) {
-        return String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+      // Words that cannot be part of a person's name in this context
+      let nameStopWords: Set<String> = [
+        "tomorrow", "today", "yesterday", "next", "this", "at", "on", "in", "for", "from",
+        "the", "a", "an", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+        "sunday", "morning", "afternoon", "evening", "night", "week", "month", "pm", "am"
+      ]
+
+      // Named 1:1 pattern — match the name word(s) and strip trailing context words
+      if let range = lower.range(of: #"1:1 with [A-Za-z][A-Za-z\-]+(?:\s+[A-Za-z][A-Za-z\-]+)?"#, options: .regularExpression) {
+        var words = String(text[range]).components(separatedBy: " ")
+        while let last = words.last, nameStopWords.contains(last.lowercased()) { words.removeLast() }
+        return words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
       }
       // 1-on-1 / one-on-one variant
-      if let range = lower.range(of: #"(?:1-on-1|one-on-one) with [A-Za-z][A-Za-z\- ]+"#, options: .regularExpression) {
-        let title = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+      if let range = lower.range(of: #"(?:1-on-1|one-on-one) with [A-Za-z][A-Za-z\-]+(?:\s+[A-Za-z][A-Za-z\-]+)?"#, options: .regularExpression) {
+        var words = String(text[range]).components(separatedBy: " ")
+        while let last = words.last, nameStopWords.contains(last.lowercased()) { words.removeLast() }
+        let title = words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         return title.prefix(1).uppercased() + title.dropFirst()
       }
 
@@ -640,7 +662,7 @@ class VoxiCalAgent {
       return nil
     }
 
-    private func extractedDate(from text: String) -> Date? {
+    func extractedDate(from text: String) -> Date? {
       let lower = text.lowercased()
       let calendar = Calendar.current
       let today = calendar.startOfDay(for: Date())
@@ -667,7 +689,7 @@ class VoxiCalAgent {
       return nil
     }
 
-    private func extractedTime(from text: String) -> (hour: Int, minute: Int)? {
+    func extractedTime(from text: String) -> (hour: Int, minute: Int)? {
       let lower = text.lowercased()
       // "morning", "afternoon" etc. are always vague times.
       if lower.contains("morning") || lower.contains("afternoon") || lower.contains("evening")
@@ -704,7 +726,7 @@ class VoxiCalAgent {
       return (hour, minute)
     }
 
-    private func extractedDurationMinutes(from text: String) -> Int? {
+    func extractedDurationMinutes(from text: String) -> Int? {
       let lower = text.lowercased()
 
       // Natural-language fixed phrases (checked before digit/word patterns).
@@ -745,7 +767,7 @@ class VoxiCalAgent {
       return nil
     }
 
-    private func extractedLocation(from text: String) -> String? {
+    func extractedLocation(from text: String) -> String? {
       let lower = text.lowercased()
       if lower.contains("zoom") { return "Zoom" }
       if lower.contains("teams") { return "Teams" }

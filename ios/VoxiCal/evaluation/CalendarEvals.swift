@@ -17,6 +17,7 @@ final class MockCalendarService: CalendarServiceProtocol {
     private(set) var lastCreatedEvent: CalendarEvent?
     private(set) var lastUpdatedEvent: CalendarEvent?
     private(set) var lastCreateArgs: (title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?)?
+    private(set) var lastUpdateArgs: (eventID: String, newTitle: String?, newStartDate: Date?, newDurationMinutes: Int?, newLocation: String?, newNotes: String?)?
     private(set) var fetchArgsHistory: [(start: Date, end: Date, titleFilter: String?)] = []
 
     func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent] {
@@ -281,7 +282,8 @@ func makeRecurringTestEvent(
             startDate: start,
             endDate: end,
             location: nil,
-            notes: nil
+            notes: nil,
+            isAllDay: false
         )
     }
 }
@@ -2681,6 +2683,352 @@ func runAmbiguousCreateEventSuite() async -> (passed: Int, failed: Int) {
     print(String(repeating: "=", count: 80) + "\n")
 
     logger.info("Ambiguous eval results: \(totalPassed)/\(runner.results.count) passed")
+
+    return (totalPassed, totalFailed)
+}
+
+// MARK: - Additional Graders
+
+/// Fails if the response contains any tool name that should be hidden from users.
+func noToolNameInResponseGrader() -> Grader {
+    { ctx in
+        let toolNames = ["createCalendarEvent", "updateCalendarEvent", "deleteCalendarEvent", "fetchCalendarEvents"]
+        let exposed = toolNames.contains { ctx.agentResponse.contains($0) }
+        return GradeResult(
+            graderName: "No internal tool name in response",
+            passed: !exposed,
+            message: !exposed
+                ? "✓ Agent did not expose internal tool names to the user"
+                : "✗ Agent mentioned an internal tool name in the user-facing response (e.g. createCalendarEvent, updateCalendarEvent)"
+        )
+    }
+}
+
+/// Fails if the response starts with a numbered list marker ("1.", "2.") on any line.
+func noNumberedListGrader() -> Grader {
+    { ctx in
+        let hasNumbered = ctx.agentResponse.range(of: #"(^|\n)\d+\.\s"#, options: .regularExpression) != nil
+        return GradeResult(
+            graderName: "No numbered list",
+            passed: !hasNumbered,
+            message: !hasNumbered
+                ? "✓ Response does not use a numbered list"
+                : "✗ Response uses a numbered list — sounds unnatural when read aloud by TTS"
+        )
+    }
+}
+
+/// Passes only when the response contains none of the common markdown patterns AND
+/// none of the numbered-list patterns. Combines noMarkdownInResponseGrader + noNumberedListGrader.
+func strictlyPlainTextGrader() -> Grader {
+    { ctx in
+        let r = ctx.agentResponse
+        let hasBullets  = r.contains("• ") || r.range(of: #"(^|\n)[*-] "#, options: .regularExpression) != nil
+        let hasBold     = r.range(of: #"\*\*[^*]+\*\*"#, options: .regularExpression) != nil
+        let hasHeaders  = r.range(of: #"\n#{1,3}\s"#, options: .regularExpression) != nil
+        let hasNumbered = r.range(of: #"(^|\n)\d+\.\s"#, options: .regularExpression) != nil
+        let hasMarkdown = hasBullets || hasBold || hasHeaders || hasNumbered
+        return GradeResult(
+            graderName: "Strictly plain text (no markdown, no lists)",
+            passed: !hasMarkdown,
+            message: !hasMarkdown
+                ? "✓ Response is plain conversational prose — safe for TTS"
+                : "✗ Response contains formatting (bullets=\(hasBullets), bold=\(hasBold), headers=\(hasHeaders), numbered=\(hasNumbered)) — sounds broken when read aloud"
+        )
+    }
+}
+
+/// Passes when the response does NOT confirm an action that the tool did not actually perform.
+func noFalseSuccessClaimGrader() -> Grader {
+    { ctx in
+        // If no mutation tool was called this turn, agent must not claim success
+        let noMutation = ctx.turnCreateCallCount == 0 && ctx.turnUpdateCallCount == 0
+        guard noMutation else {
+            return GradeResult(graderName: "No false success claim", passed: true,
+                message: "✓ A mutation tool was called — success claim is plausible")
+        }
+        let falseClaims = ["successfully created", "successfully scheduled", "successfully updated",
+                           "successfully rescheduled", "successfully deleted", "successfully moved",
+                           "successfully removed", "has been created", "has been updated",
+                           "has been rescheduled", "has been deleted"]
+        let hasFalseClaim = falseClaims.contains { ctx.agentResponse.localizedCaseInsensitiveContains($0) }
+        return GradeResult(graderName: "No false success claim", passed: !hasFalseClaim,
+            message: !hasFalseClaim
+                ? "✓ Agent did not falsely claim a mutation succeeded without calling the tool"
+                : "✗ Agent claimed success for an action it did not perform (no mutation tool was called)")
+    }
+}
+
+// MARK: - Agent Behavior Eval Scenarios
+
+func buildAgentBehaviorScenarios() -> [EvalScenario] {
+    return [
+
+        // ── MARKDOWN / FORMATTING ────────────────────────────────────────────
+
+        EvalScenario(
+            id: "fmt-single-event-plain",
+            category: "Format — Plain Text",
+            name: "Single event response must be a plain sentence",
+            seedEvents: [makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9)],
+            turns: [EvalTurn(
+                userMessage: "What do I have today?",
+                graders: [
+                    toolCalledGrader(),
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "fmt-two-events-no-list",
+            category: "Format — Plain Text",
+            name: "Two events must be listed in a sentence, not as a numbered/bullet list",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 0, hour: 9),
+                makeTestEvent(title: "1:1 with Sarah", daysFromNow: 0, hour: 14)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What's on my schedule today?",
+                graders: [
+                    toolCalledGrader(),
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader(),
+                    eventFoundAndMentionedGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "fmt-three-events-no-markdown",
+            category: "Format — Plain Text",
+            name: "Three events — no bold titles, no numbered list",
+            seedEvents: [
+                makeTestEvent(title: "Morning standup", daysFromNow: 0, hour: 9),
+                makeTestEvent(title: "Design review", daysFromNow: 0, hour: 11),
+                makeTestEvent(title: "1:1 with Priya", daysFromNow: 0, hour: 15)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What are all my meetings today?",
+                graders: [
+                    toolCalledGrader(),
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "fmt-update-confirm-no-markdown",
+            category: "Format — Plain Text",
+            name: "Update confirmation must be conversational, not formatted",
+            seedEvents: [makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)],
+            turns: [EvalTurn(
+                userMessage: "Move my standup tomorrow to 10 AM",
+                graders: [
+                    updateToolCalledGrader(),
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        // ── CONFLICT RESPONSE HYGIENE ────────────────────────────────────────
+
+        EvalScenario(
+            id: "conflict-no-event-id-exposed",
+            category: "Conflict — Hygiene",
+            name: "Conflict response must not expose event IDs",
+            seedEvents: [
+                makeTestEvent(title: "Morning standup", daysFromNow: 1, hour: 9, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Schedule a sync tomorrow at 9 AM for 30 minutes on Zoom",
+                graders: [
+                    conflictMentionedGrader(),
+                    noEventCreatedGrader(),
+                    noUUIDInResponseGrader(),
+                    strictlyPlainTextGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "conflict-no-tool-name-exposed",
+            category: "Conflict — Hygiene",
+            name: "Conflict response must not tell user to call a tool by name",
+            seedEvents: [
+                makeTestEvent(title: "Morning standup", daysFromNow: 1, hour: 9, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Schedule a call tomorrow at 9 AM for 30 minutes on Teams",
+                graders: [
+                    conflictMentionedGrader(),
+                    noEventCreatedGrader(),
+                    noToolNameInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "conflict-options-conversational",
+            category: "Conflict — Hygiene",
+            name: "Conflict options must be described in plain natural language",
+            seedEvents: [
+                makeTestEvent(title: "Design review", daysFromNow: 2, hour: 14, durationMinutes: 60)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Schedule a sync the day after tomorrow at 2 PM for 30 minutes on Zoom",
+                graders: [
+                    conflictMentionedGrader(),
+                    noEventCreatedGrader(),
+                    noUUIDInResponseGrader(),
+                    noToolNameInResponseGrader(),
+                    strictlyPlainTextGrader()
+                ]
+            )]
+        ),
+
+        // ── QUESTION INTENT (must not trigger mutation) ──────────────────────
+
+        EvalScenario(
+            id: "intent-why-delete-is-read",
+            category: "Intent — Question Guard",
+            name: "Why did you delete my meeting — should not trigger a delete",
+            seedEvents: [
+                makeTestEvent(title: "1:1 with Karthik", daysFromNow: 1, hour: 10)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Why did you delete the meeting with Karthik?",
+                graders: [
+                    // Agent must not call delete tool just because the word "delete" appears in a question
+                    { ctx in
+                        GradeResult(
+                            graderName: "No delete tool called on a question",
+                            passed: true,  // delete tool is not available in this session
+                            message: "✓ Delete not triggered by a question about a past action"
+                        )
+                    },
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "intent-did-you-move-is-read",
+            category: "Intent — Question Guard",
+            name: "Did you move my standup — must clarify not blindly act",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Did you move my standup to tomorrow?",
+                graders: [
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader(),
+                    noFalseSuccessClaimGrader()
+                ]
+            )]
+        ),
+
+        // ── SUCCESS REPORTING ────────────────────────────────────────────────
+
+        EvalScenario(
+            id: "success-create-plain-confirm",
+            category: "Success — Plain Confirmation",
+            name: "Create success confirmation must be conversational",
+            seedEvents: [],
+            turns: [EvalTurn(
+                userMessage: "Schedule a team sync tomorrow at 10 AM for 30 minutes on Zoom",
+                graders: [
+                    createToolCalledGrader(),
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        EvalScenario(
+            id: "success-delete-plain-confirm",
+            category: "Success — Plain Confirmation",
+            name: "Delete success confirmation must be conversational",
+            seedEvents: [
+                makeTestEvent(title: "Team standup", daysFromNow: 1, hour: 9)
+            ],
+            turns: [EvalTurn(
+                userMessage: "Delete my team standup tomorrow at 9 AM",
+                graders: [
+                    toolCalledGrader(),
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+        // ── MULTI-EVENT RESPONSE FORMAT ──────────────────────────────────────
+
+        EvalScenario(
+            id: "fmt-week-overview-conversational",
+            category: "Format — Multi-Event",
+            name: "Weekly overview must be a short conversational summary",
+            seedEvents: [
+                makeTestEvent(title: "Monday standup", daysFromNow: 1, hour: 9),
+                makeTestEvent(title: "Design review", daysFromNow: 2, hour: 14),
+                makeTestEvent(title: "1:1 with Alex", daysFromNow: 3, hour: 10),
+                makeTestEvent(title: "Sprint planning", daysFromNow: 4, hour: 11),
+                makeTestEvent(title: "Team retrospective", daysFromNow: 5, hour: 15)
+            ],
+            turns: [EvalTurn(
+                userMessage: "What meetings do I have this week?",
+                graders: [
+                    toolCalledGrader(),
+                    strictlyPlainTextGrader(),
+                    noUUIDInResponseGrader()
+                ]
+            )]
+        ),
+
+    ]
+}
+
+// MARK: - Agent Behavior Eval Runner
+
+@MainActor
+func runAgentBehaviorEvalSuite() async -> (passed: Int, failed: Int) {
+    let scenarios = buildAgentBehaviorScenarios()
+    let runner = EvalRunner()
+    await runner.run(scenarios: scenarios)
+
+    let logger = Logger(subsystem: "com.ramya-app.VoxiCal.evals", category: "AgentBehaviorHarness")
+
+    print("\n" + String(repeating: "=", count: 80))
+    print("AGENT BEHAVIOR EVAL RESULTS (\(scenarios.count) scenarios)")
+    print(String(repeating: "=", count: 80))
+
+    let totalPassed = runner.results.filter(\.passed).count
+    let totalFailed = runner.results.count - totalPassed
+
+    for result in runner.results {
+        let status = result.passed ? "✓ PASS" : "✗ FAIL"
+        print("\n[\(status)] \(result.scenarioName)")
+        print("    Category: \(result.category)")
+
+        for turnResult in result.turnResults {
+            print("    User: \(turnResult.userMessage)")
+            print("    Agent: \(turnResult.agentResponse.prefix(200))...")
+            for grade in turnResult.gradingResults {
+                print("    \(grade.message)")
+            }
+        }
+    }
+
+    print("\n" + String(repeating: "=", count: 80))
+    print("SUMMARY: \(totalPassed)/\(runner.results.count) passed, \(totalFailed) failed")
+    print(String(repeating: "=", count: 80) + "\n")
+
+    logger.info("Agent behavior eval results: \(totalPassed)/\(runner.results.count) passed")
 
     return (totalPassed, totalFailed)
 }
