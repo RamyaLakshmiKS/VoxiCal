@@ -81,21 +81,27 @@ class TTSService: NSObject {
     /// with an enhanced (neural) voice preferred over the default.
     private func preferredVoice() -> AVSpeechSynthesisVoice? {
         let languageCode = Locale.current.language.languageCode?.identifier ?? "en"
-
-        // Prefer enhanced/neural voices (higher quality, downloaded on demand)
         let voices = AVSpeechSynthesisVoice.speechVoices()
-        let enhanced = voices.first {
-            $0.language.hasPrefix(languageCode) &&
-            $0.quality == .enhanced
+
+        // Premium neural voices (iOS 17+), falling back to enhanced then any locale match
+        if let premium = voices.first(where: {
+            $0.language.hasPrefix(languageCode) && $0.quality == .premium
+        }) {
+            return premium
         }
-        if let enhanced { return enhanced }
 
-        // Fall back to any voice matching the locale language
-        let standard = voices.first { $0.language.hasPrefix(languageCode) }
-        if let standard { return standard }
+        if let enhanced = voices.first(where: {
+            $0.language.hasPrefix(languageCode) && $0.quality == .enhanced
+        }) {
+            return enhanced
+        }
 
-        // Final fallback: system default
-        return AVSpeechSynthesisVoice(language: Locale.current.identifier)
+        if let fallback = voices.first(where: { $0.language.hasPrefix(languageCode) }) {
+            return fallback
+        }
+
+        let locale = Locale.current.identifier
+        return AVSpeechSynthesisVoice(language: locale)
     }
 
     /// Switches the shared AVAudioSession to playback mode so speech is audible.
