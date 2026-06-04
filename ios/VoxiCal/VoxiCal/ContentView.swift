@@ -334,7 +334,7 @@ private struct RecordingInputRow: View {
                 }
             }
 
-            // WhatsApp-style action row: Pause/Resume · Delete · Send
+            // Action row: Pause/Resume · Delete · Send
             HStack(spacing: 10) {
 
                 // Pause / Resume

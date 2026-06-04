@@ -435,7 +435,7 @@ class VoxiCalAgent {
     private func appendWelcome() {
         messages.append(ChatMessage(
             role: .assistant,
-            text: "Hi! I'm VoxiCal. Try asking: \"What's on my schedule today?\" or \"Do I have anything this week?\""
+            text: "Hi, how can I help you today?"
         ))
     }
 
