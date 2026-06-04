@@ -32,7 +32,7 @@
 			path = VoxiCal;
 			sourceTree = "<group>";
 		};
-		E1A2B3C4D5E6000011AA0002 /* VoxiCalTests */ = {
+		E1A2B3C4D5E6000011AA0002 /* tests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = tests;
 			sourceTree = "<group>";
@@ -74,7 +74,7 @@
 			isa = PBXGroup;
 			children = (
 				2DFD9DF32FC9603C00883BD2 /* VoxiCal */,
-				E1A2B3C4D5E6000011AA0002 /* VoxiCalTests */,
+				E1A2B3C4D5E6000011AA0002 /* tests */,
 				2DFD9DF22FC9603C00883BD2 /* Products */,
 				2D3C2EFB2FCD0C7300B10D00 /* Recovered References */,
 			);
@@ -126,7 +126,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				E1A2B3C4D5E6000011AA0002 /* VoxiCalTests */,
+				E1A2B3C4D5E6000011AA0002 /* tests */,
 			);
 			name = VoxiCalTests;
 			packageProductDependencies = (
