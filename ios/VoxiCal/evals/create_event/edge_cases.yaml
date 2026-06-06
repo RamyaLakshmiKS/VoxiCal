@@ -1,0 +1,172 @@
+suite: Create Event — Edge Cases
+description: >
+  Guardrails, negative tests, and boundary conditions. These scenarios verify
+  that the agent never creates events prematurely, never asks for fields that
+  are not required for a given event type, and handles conflicts and generic
+  inputs correctly.
+
+scenarios:
+
+  # ── GUARDRAILS: MUST NOT CREATE WITHOUT REQUIRED FIELDS ──────────────
+
+  - id: cre-edge-001
+    name: "GUARDRAIL: Professional meeting must not create without location"
+    event_type: professional
+    user: "Schedule a meeting with my manager tomorrow at 10am for 30 minutes"
+    provided: [title, date, time, duration]
+    missing: [location]
+    expected:
+      workflow: ask_for_location
+      must_not_call: createCalendarEvent
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - noFalseSuccessClaimGrader
+      - createPromptAskForLocationGrader
+
+  - id: cre-edge-002
+    name: "GUARDRAIL: Professional meeting must not create without duration"
+    event_type: professional
+    user: "Schedule a conference call with the board next Tuesday at 9am on Zoom"
+    provided: [title, date, time, location]
+    missing: [duration]
+    expected:
+      workflow: ask_for_duration
+      must_not_call: createCalendarEvent
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - noFalseSuccessClaimGrader
+      - createPromptAskForDurationGrader
+
+  # ── NEGATIVE: MUST NOT ASK FOR OPTIONAL FIELDS ───────────────────────
+
+  - id: cre-edge-003
+    name: "Study session: agent must NOT ask for location"
+    event_type: study_session
+    user: "Add a study session tomorrow at 2pm for 2 hours"
+    expected:
+      workflow: createCalendarEvent
+      must_not_ask: [location]
+    negative_assertions:
+      - agent must NOT ask for location
+      - agent must NOT ask for platform
+    graders:
+      - createToolCalledGrader
+      - didNotAskForLocationGrader
+
+  - id: cre-edge-004
+    name: "Gym session: agent must NOT ask for location if user didn't mention one"
+    event_type: gym_session
+    user: "Add a gym session tomorrow morning at 7am for 45 minutes"
+    expected:
+      workflow: createCalendarEvent
+      must_not_ask: [location]
+    graders:
+      - createToolCalledGrader
+      - didNotAskForLocationGrader
+
+  - id: cre-edge-005
+    name: "Social event: agent must NOT ask for duration"
+    event_type: social
+    user: "Add a family dinner this Sunday at 7pm"
+    expected:
+      workflow: createCalendarEvent
+      must_not_ask: [duration]
+    graders:
+      - createToolCalledGrader
+      - didNotAskForDurationGrader
+
+  # ── MOVIE: DEFAULT DURATION ───────────────────────────────────────────
+
+  - id: cre-edge-006
+    name: "Movie: default 150 min used — agent must NOT ask for duration"
+    event_type: movie
+    user: "Add a movie this Saturday at 8pm"
+    expected:
+      workflow: createCalendarEvent
+      durationMinutes: 150
+      must_not_ask: [duration]
+    graders:
+      - createToolCalledGrader
+      - createCalledWithDurationGrader(150)
+      - didNotAskForDurationGrader
+
+  # ── BIRTHDAY EDGE CASES ────────────────────────────────────────────────
+
+  - id: cre-edge-007
+    name: "Birthday: agent must NOT ask for time or duration"
+    event_type: birthday
+    user: "Add Ryan's birthday on August 10"
+    expected:
+      workflow: createCalendarEvent
+      isAllDay: true
+      must_not_ask: [time, duration, location]
+    graders:
+      - createToolCalledGrader
+      - createCalledWithAllDayGrader
+      - didNotAskForTimeGrader
+      - didNotAskForDurationGrader
+
+  # ── CONFLICT DETECTION ────────────────────────────────────────────────
+
+  - id: cre-edge-008
+    name: Conflict detected — agent reports and does not create
+    event_type: professional
+    user: "Schedule a team sync tomorrow at 10am for 30 minutes on Zoom"
+    seed_events:
+      - title: "Design review"
+        daysFromNow: 1
+        hour: 10
+        durationMinutes: 60
+    expected:
+      workflow: report_conflict
+      must_not_call: createCalendarEvent
+    graders:
+      - conflictMentionedGrader
+      - noEventCreatedGrader
+      - noUUIDInResponseGrader
+
+  - id: cre-edge-009
+    name: Conflict response is conversational — hides tool names and IDs
+    event_type: professional
+    user: "Add a meeting with the board the day after tomorrow at 2pm for 30 minutes on Zoom"
+    seed_events:
+      - title: "Weekly standup"
+        daysFromNow: 2
+        hour: 14
+        durationMinutes: 60
+    expected:
+      workflow: report_conflict
+    graders:
+      - conflictMentionedGrader
+      - noEventCreatedGrader
+      - noToolNameInResponseGrader
+      - noUUIDInResponseGrader
+
+  # ── GENERIC TITLE ─────────────────────────────────────────────────────
+
+  - id: cre-edge-010
+    name: Generic title ("a call") — agent asks for meaningful event name
+    event_type: professional
+    user: "Schedule a call tomorrow at 2pm for 30 minutes on Zoom"
+    notes: >
+      "a call" is too generic for a calendar event title. The agent should
+      ask the user what the call is about / what to name it.
+    expected:
+      workflow: ask_for_title
+      must_not_call: createCalendarEvent
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForTitleGrader
+
+  # ── NO FALSE SUCCESS ──────────────────────────────────────────────────
+
+  - id: cre-edge-011
+    name: Agent must not claim success when it did not create the event
+    event_type: professional
+    user: "Schedule a meeting with Karthik"
+    expected:
+      workflow: ask_for_missing_details
+      must_not: claim successful creation
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - noFalseSuccessClaimGrader

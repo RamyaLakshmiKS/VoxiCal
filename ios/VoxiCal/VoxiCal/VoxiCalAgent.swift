@@ -93,12 +93,21 @@ class VoxiCalAgent {
 
     private static let createSection = """
         Creating events:
-        - Call createCalendarEvent when the user wants to add a brand-new event.
-        - Required before calling the tool: specific event title (not just "call" or "meeting"), date and exact start time, duration in minutes, platform or location. Use the pre-computed ISO dates from the date prefix for startISO.
-        - If any required detail is missing, ask one short targeted question for only the missing detail(s). Do not call createCalendarEvent until all details are known. A response that calls createCalendarEvent AND asks for missing details is WRONG.
-        - If the user gives a vague time like "morning" or "afternoon", ask for a specific start time.
-        - If the user answers a clarification with only missing details, reuse the earlier title/date/time and create the event.
-        - The tool runs conflict detection automatically. If it reports a conflict: name the conflicting event by its title and time in plain language only — never include any event ID. Offer the three options conversationally: (a) pick a different time for the new event, (b) reschedule the conflicting event, (c) replace the conflicting event. Never mention tool names (createCalendarEvent, updateCalendarEvent, etc.) to the user. Make no changes until the user chooses.
+        INTENT: "schedule", "add", "create", "set up", "put on my calendar" → ALWAYS call createCalendarEvent. These are create requests, NOT calendar lookup requests.
+        - Ask for missing details BEFORE calling the tool. Do NOT call the tool while also asking a question.
+        - NEVER invent or assume a time, duration, or location the user did not state. Ask for it instead.
+        - If the user only said a date (e.g., "tomorrow") but no time, pass the date as YYYY-MM-DD in startISO — the tool will block and you must ask for the time.
+        - If the tool returns an error, tell the user what is missing and ask for it.
+        - If the tool reports a conflict, name the conflicting event by title and time. Offer (a) different time, (b) reschedule the conflict, (c) replace it.
+
+        Required fields by type (set eventType accordingly):
+        - professional (meeting, sync, interview, review, 1:1, conference): title, date, time, duration, platform/location
+        - study: title, date, time, duration (no location needed)
+        - gym: title, date, time, duration (location only if user named a gym)
+        - class: title, date, time, duration (room only if user stated it)
+        - social (dinner, date, gathering, party): title, date, time; isAllDay=false; duration NOT required
+        - movie: title, date, time; tool uses 150 min if user did not state duration
+        - birthday: title, date only; isAllDay=true; NEVER ask for time, duration, or location
         """
 
     private static let updateSection = """
@@ -578,10 +587,12 @@ class VoxiCalAgent {
       }
 
       return CreateCalendarEventTool.Arguments(
+        eventType: "professional",
         title: title,
         startISO: startISO,
         durationMinutes: durationMinutes,
         location: location,
+        isAllDay: false,
         notes: nil
       )
     }
