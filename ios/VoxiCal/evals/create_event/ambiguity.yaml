@@ -1,0 +1,191 @@
+suite: Create Event — Ambiguity Handling
+description: >
+  Scenarios where required information is missing. The agent must ask ONE
+  targeted question for only the missing field(s) before calling the tool.
+  Calling createCalendarEvent before collecting all required details is a
+  hard failure for every scenario in this suite.
+
+scenarios:
+
+  # ── PROFESSIONAL — MISSING FIELDS ────────────────────────────────────
+
+  - id: cre-amb-001
+    name: Professional meeting missing date, time, duration, and location
+    event_type: professional
+    user: "Schedule a meeting with my manager"
+    required_but_missing: [date, time, duration, location]
+    expected:
+      workflow: ask_for_missing_details
+      must_not_call: createCalendarEvent
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createClarificationGrader
+
+  - id: cre-amb-002
+    name: Professional meeting missing time
+    event_type: professional
+    user: "Schedule a team meeting tomorrow for 30 minutes on Zoom"
+    required_but_missing: [time]
+    expected:
+      workflow: ask_for_time
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForDateTimeGrader
+
+  - id: cre-amb-003
+    name: Professional meeting missing duration
+    event_type: professional
+    user: "Schedule a team sync tomorrow at 3pm on Zoom"
+    required_but_missing: [duration]
+    expected:
+      workflow: ask_for_duration
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForDurationGrader
+
+  - id: cre-amb-004
+    name: Professional meeting missing location/platform
+    event_type: professional
+    user: "Schedule a team sync tomorrow at 3pm for 30 minutes"
+    required_but_missing: [location]
+    expected:
+      workflow: ask_for_location
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForLocationGrader
+
+  - id: cre-amb-005
+    name: Professional meeting with vague time ("morning")
+    event_type: professional
+    user: "Schedule a check-in with Alex tomorrow morning for 30 minutes on Zoom"
+    required_but_missing: [exact_time]
+    expected:
+      workflow: ask_for_specific_time
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForSpecificTimeGrader
+
+  - id: cre-amb-006
+    name: Professional meeting resolved across two turns
+    event_type: professional
+    turns:
+      - user: "Schedule a 1:1 with Priya next Friday"
+        expected: ask_for_time_duration_location
+        graders:
+          - noActionToolCallsThisTurnGrader
+          - createClarificationGrader
+      - user: "2pm for 45 minutes on Zoom"
+        expected: createCalendarEvent
+        graders:
+          - createToolCalledGrader
+
+  # ── STUDY SESSION — MISSING FIELDS ───────────────────────────────────
+
+  - id: cre-amb-010
+    name: Study session missing time
+    event_type: study_session
+    user: "Add a math study session tomorrow for 2 hours"
+    required_but_missing: [time]
+    notes: Location is NOT required for study sessions — must not ask for it.
+    expected:
+      workflow: ask_for_time_only
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForDateTimeGrader
+
+  - id: cre-amb-011
+    name: Study session missing duration
+    event_type: study_session
+    user: "Add a study session tomorrow at 4pm"
+    required_but_missing: [duration]
+    expected:
+      workflow: ask_for_duration_only
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForDurationGrader
+
+  # ── GYM — MISSING FIELDS ─────────────────────────────────────────────
+
+  - id: cre-amb-020
+    name: Gym session missing time
+    event_type: gym_session
+    user: "Add a gym session tomorrow for 1 hour"
+    required_but_missing: [time]
+    notes: Location is NOT required — must not ask for it.
+    expected:
+      workflow: ask_for_time_only
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForDateTimeGrader
+
+  - id: cre-amb-021
+    name: Gym session missing duration
+    event_type: gym_session
+    user: "Add a gym session tomorrow at 6am"
+    required_but_missing: [duration]
+    expected:
+      workflow: ask_for_duration_only
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForDurationGrader
+
+  # ── SOCIAL — MISSING TIME ─────────────────────────────────────────────
+
+  - id: cre-amb-030
+    name: Family gathering missing time
+    event_type: social
+    user: "Add a family gathering this Sunday"
+    required_but_missing: [time]
+    notes: Duration is NOT required for social events — must not ask for it.
+    expected:
+      workflow: ask_for_time_only
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForDateTimeGrader
+
+  # ── BIRTHDAY — MISSING DATE ───────────────────────────────────────────
+
+  - id: cre-amb-040
+    name: Birthday missing date — asks for date only
+    event_type: birthday
+    user: "Add my sister's birthday"
+    required_but_missing: [date]
+    notes: >
+      Agent must ask for date ONLY. Must not ask for time, duration, or
+      location — none are required for birthdays.
+    expected:
+      workflow: ask_for_date_only
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - askedForDateGrader
+
+  - id: cre-amb-041
+    name: Birthday resolved in second turn — creates as all-day
+    event_type: birthday
+    turns:
+      - user: "Add my dad's birthday"
+        expected: ask_for_date
+        graders:
+          - noActionToolCallsThisTurnGrader
+          - askedForDateGrader
+      - user: "It's on March 15"
+        expected: createCalendarEvent (isAllDay=true)
+        graders:
+          - createToolCalledGrader
+          - createCalledWithAllDayGrader
+
+  # ── MOVIE — MISSING TIME ──────────────────────────────────────────────
+
+  - id: cre-amb-050
+    name: Movie missing time — asks for time, NOT duration
+    event_type: movie
+    user: "Add a movie night this Friday"
+    required_but_missing: [time]
+    notes: >
+      Duration has a default of 150 min — agent must NOT ask for it.
+      Location is optional — agent must NOT ask for it.
+    expected:
+      workflow: ask_for_time_only
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - createPromptAskForDateTimeGrader

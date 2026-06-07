@@ -77,7 +77,7 @@ enum CalendarError: LocalizedError {
 protocol CalendarServiceProtocol: AnyObject {
     func fetchEvents(start: Date, end: Date, titleFilter: String?) async throws -> [CalendarEvent]
     func deleteEvent(id: String) async throws
-    func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent
+    func createEvent(title: String, startDate: Date, durationMinutes: Int?, location: String?, notes: String?, isAllDay: Bool) async throws -> CalendarEvent
     /// Updates fields of an existing event. Pass nil to leave a field unchanged.
     /// Pass an empty string for location or notes to clear those fields.
     /// - Parameter recurrenceScope: `.thisEvent` to modify only this occurrence,
@@ -176,18 +176,28 @@ class CalendarService {
 
     // MARK: - Create
 
-    func createEvent(title: String, startDate: Date, durationMinutes: Int, location: String?, notes: String?) async throws -> CalendarEvent {
+    func createEvent(title: String, startDate: Date, durationMinutes: Int?, location: String?, notes: String?, isAllDay: Bool) async throws -> CalendarEvent {
         guard hasAccess || EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             throw CalendarError.accessDenied
         }
 
+        let cal = Calendar.current
         let ekEvent = EKEvent(eventStore: store)
         ekEvent.title = title
-        ekEvent.startDate = startDate
-        ekEvent.endDate = startDate.addingTimeInterval(Double(durationMinutes) * 60)
+        ekEvent.isAllDay = isAllDay
         ekEvent.location = location
         ekEvent.notes = notes
         ekEvent.calendar = store.defaultCalendarForNewEvents
+
+        if isAllDay {
+            let dayStart = cal.startOfDay(for: startDate)
+            ekEvent.startDate = dayStart
+            ekEvent.endDate = cal.date(byAdding: .day, value: 1, to: dayStart)!
+        } else {
+            ekEvent.startDate = startDate
+            let mins = durationMinutes ?? 60
+            ekEvent.endDate = startDate.addingTimeInterval(Double(mins) * 60)
+        }
 
         do {
             try store.save(ekEvent, span: .thisEvent, commit: true)
@@ -198,11 +208,11 @@ class CalendarService {
         return CalendarEvent(
             id: ekEvent.eventIdentifier ?? UUID().uuidString,
             title: title,
-            startDate: startDate,
+            startDate: ekEvent.startDate,
             endDate: ekEvent.endDate,
             location: location,
             notes: notes,
-            isAllDay: false
+            isAllDay: isAllDay
         )
     }
 

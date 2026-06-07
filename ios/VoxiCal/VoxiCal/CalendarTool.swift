@@ -177,19 +177,25 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
 
     @Generable
     struct Arguments {
+        @Guide(description: "Event type: professional, study, gym, class, social, movie, or birthday.")
+        var eventType: String
+
         @Guide(description: "The title or name of the event.")
         var title: String
 
-        @Guide(description: "Start date and time in YYYY-MM-DDTHH:MM format using local time. Compute from today's ISO date. Example: if today is 2026-05-31, then tomorrow 9am = '2026-06-01T09:00'.")
+        @Guide(description: "Start datetime in YYYY-MM-DDTHH:MM format. Birthdays use YYYY-MM-DD only. If user said a date but NO specific time, use YYYY-MM-DD so the tool blocks and asks you to collect the time.")
         var startISO: String
 
-        @Guide(description: "Duration in minutes, as explicitly stated by the user. Omit (nil) if the user has not specified a duration — the tool will prompt you to ask first. NEVER assume 60 or any default.")
+        @Guide(description: "Duration in minutes. Omit for social events and birthdays. Movies default to 150 min if not stated. For professional/study/gym/class: provide only what the user explicitly said.")
         var durationMinutes: Int?
 
-        @Guide(description: "Meeting platform or room (e.g., 'Zoom', 'Google Meet', 'Teams', 'Conference Room A', 'In person'). Always ask if not provided. Omit only if user explicitly says there is none.")
+        @Guide(description: "Platform or venue. Required only for professional events. Include for other types only if user mentioned it.")
         var location: String?
 
-        @Guide(description: "Optional notes or description. Omit if not provided by the user.")
+        @Guide(description: "true for all-day events (birthdays only). When true, only the date in startISO is used.")
+        var isAllDay: Bool
+
+        @Guide(description: "Optional notes. Omit if not provided.")
         var notes: String?
 
     }
@@ -197,7 +203,6 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
     let calendarService: any CalendarServiceProtocol
 
     func call(arguments: Arguments) async throws -> String {
-        // Validate presence of required fields before attempting to create.
         if arguments.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             logger.info("[TOOL: createCalendarEvent] blocked — title missing")
             return "Event title not specified. Ask the user for a clear title before calling this tool."
@@ -208,31 +213,65 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
             return "Start date and time not specified. Ask the user for the date and time (e.g., 2026-06-01T15:00) before calling this tool."
         }
 
-        // Detect obviously vague time phrases that are not ISO-like and require clarification.
         let lowerStart = arguments.startISO.lowercased()
+        // Only check for vague times if startISO doesn't look like an ISO date (YYYY-MM-DD...)
+        let looksLikeISO = arguments.startISO.range(of: #"^\d{4}-\d{2}-\d{2}"#, options: .regularExpression) != nil
         let vagueTimeIndicators = ["morning", "afternoon", "evening", "around", "later", "after lunch", "before lunch", "tonight", "this afternoon"]
-        if vagueTimeIndicators.contains(where: { lowerStart.contains($0) }) {
+        if !looksLikeISO && vagueTimeIndicators.contains(where: { lowerStart.contains($0) }) {
             logger.info("[TOOL: createCalendarEvent] blocked — vague start time: \(arguments.startISO)")
             return "The time provided is vague. Ask the user for a specific start time (e.g., 2026-06-01T15:00) before creating the event."
         }
 
-        guard let durationMinutes = arguments.durationMinutes else {
-            logger.info("[TOOL: createCalendarEvent] blocked — duration missing")
-            return "Duration not specified. Ask the user how long the event should be (in minutes) before calling this tool again."
+        // Block date-only ISO (10 chars) — time was not specified.
+        if !arguments.isAllDay && arguments.startISO.count == 10 {
+            logger.info("[TOOL: createCalendarEvent] blocked — date given without time: \(arguments.startISO)")
+            return "Start time not specified — only a date was given. Ask the user for a specific start time before calling this tool."
         }
 
-        // Location is required unless the user explicitly said there is none — treat empty/whitespace as missing.
-        if let loc = arguments.location {
-            if loc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                logger.info("[TOOL: createCalendarEvent] blocked — location empty string (treated as missing)")
-                return "Location or platform not specified. Ask the user where the meeting will take place (e.g., Zoom, Conference Room A) before calling this tool."
-            }
+        // Normalize event type early — used in subsequent checks.
+        let eventTypeLower = arguments.eventType.lowercased()
+
+        // Block isAllDay=true for non-birthday event types.
+        if arguments.isAllDay && eventTypeLower != "birthday" && eventTypeLower != "holiday" {
+            logger.info("[TOOL: createCalendarEvent] blocked — isAllDay=true for non-birthday type: \(eventTypeLower)")
+            return "isAllDay should only be true for birthdays and holidays. This is a '\(eventTypeLower)' event — set isAllDay=false and ask the user for a specific time."
+        }
+
+        // Block generic event titles.
+        let titleLower = arguments.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let genericTitles: Set<String> = [
+            "call", "a call", "meeting", "a meeting", "event", "an event",
+            "appointment", "session", "a session", "sync", "a sync", "chat", "a chat"
+        ]
+        if genericTitles.contains(titleLower) {
+            logger.info("[TOOL: createCalendarEvent] blocked — generic title: \(arguments.title)")
+            return "The title '\(arguments.title)' is too generic. Ask the user what the event should be called (e.g., 'Call with John', 'Sprint Review', 'Doctor Appointment')."
+        }
+
+        // Normalize empty location to nil
+        let effectiveLocation: String? = arguments.location.flatMap {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+        }
+
+        // Enforce event-type-specific required fields
+        let type = eventTypeLower
+        let isProfessional = type == "professional"
+        let isMovieType = type == "movie"
+        let isSocialType = ["social", "birthday"].contains(type)
+
+        // Compute effective duration (needed for conflict window and later creation).
+        let effectiveDuration: Int?
+        if arguments.isAllDay {
+            effectiveDuration = nil
+        } else if isMovieType {
+            effectiveDuration = arguments.durationMinutes ?? 150
+        } else if isSocialType {
+            effectiveDuration = arguments.durationMinutes
         } else {
-            logger.info("[TOOL: createCalendarEvent] blocked — location missing")
-            return "Location or platform not specified. Ask the user where the meeting will take place (e.g., Zoom, Conference Room A) before calling this tool."
+            effectiveDuration = arguments.durationMinutes  // May be nil; checked after conflict detection
         }
 
-        let toolMsg = "[TOOL: createCalendarEvent] title=\(arguments.title), start=\(arguments.startISO), duration=\(durationMinutes)min"
+        let toolMsg = "[TOOL: createCalendarEvent] type=\(type), title=\(arguments.title), start=\(arguments.startISO), duration=\(effectiveDuration.map(String.init) ?? "nil"), allDay=\(arguments.isAllDay)"
         logger.info("\(toolMsg, privacy: .public)")
 
         guard let startDate = parseISO(arguments.startISO) else {
@@ -241,38 +280,42 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
             return "Invalid date format '\(arguments.startISO)'. Use YYYY-MM-DDTHH:MM (e.g., '2025-06-15T15:00')."
         }
 
-        let endDate = startDate.addingTimeInterval(Double(durationMinutes) * 60)
+        // Conflict detection runs FIRST — report conflicts regardless of other missing fields.
+        if !arguments.isAllDay {
+            let mins = effectiveDuration ?? 60
+            let endDate = startDate.addingTimeInterval(Double(mins) * 60)
+            let overlapping = try await calendarService.fetchEvents(start: startDate, end: endDate, titleFilter: nil)
+            if !overlapping.isEmpty {
+                let conflictList = overlapping.map {
+                    "• \($0.title) at \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")"
+                }.joined(separator: "\n")
+                logger.info("[TOOL RESULT] Scheduling conflict: \(overlapping.count) overlapping event(s)")
+                return """
+                Scheduling conflict: the new event overlaps with \(conflictList).
+                Tell the user about this conflict conversationally. Offer: (a) pick a different time, (b) reschedule the conflicting event, (c) replace it. Do NOT act until the user decides.
+                """
+            }
+        }
 
-        // Always run conflict detection.
-        let overlapping = try await calendarService.fetchEvents(start: startDate, end: endDate, titleFilter: nil)
-        if !overlapping.isEmpty {
-            let conflictList = overlapping.map {
-                "• \($0.title) — \($0.description.components(separatedBy: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")"
-            }.joined(separator: "\n")
-            let conflictIDs = overlapping.map { "  \($0.title): \($0.id)" }.joined(separator: "\n")
-            let resultMsg = "[TOOL RESULT] Conflict detected: \(overlapping.count) overlapping event(s)"
-            logger.info("\(resultMsg, privacy: .public)")
-            return """
-            Conflict detected. The new event overlaps with:
-            \(conflictList)
+        // Location: required only for professional events (checked after conflict detection)
+        if isProfessional && effectiveLocation == nil {
+            logger.info("[TOOL: createCalendarEvent] blocked — professional event missing location")
+            return "Location or platform not specified. Ask the user where the meeting will take place (e.g., Zoom, Conference Room A) before calling this tool."
+        }
 
-            Tell the user conversationally and ask how to proceed. Options:
-            (a) Pick a different time → call createCalendarEvent with the new time
-            (b) Move the existing event → call updateCalendarEvent using its ID below
-            (c) Replace the existing event → call deleteCalendarEvent then createCalendarEvent
-            Do NOT act until the user chooses.
-
-            [INTERNAL — DO NOT SHOW TO USER]
-            \(conflictIDs)
-            """
+        // Duration: required for professional, study, gym, class (checked after conflict detection)
+        if !arguments.isAllDay && !isMovieType && !isSocialType && effectiveDuration == nil {
+            logger.info("[TOOL: createCalendarEvent] blocked — duration missing for eventType=\(type)")
+            return "Duration not specified. Ask the user how long the event should be (in minutes) before calling this tool again."
         }
 
         let created = try await calendarService.createEvent(
             title: arguments.title,
             startDate: startDate,
-            durationMinutes: durationMinutes,
-            location: arguments.location,
-            notes: arguments.notes
+            durationMinutes: effectiveDuration,
+            location: effectiveLocation,
+            notes: arguments.notes,
+            isAllDay: arguments.isAllDay
         )
 
         let resultMsg = "[TOOL RESULT] Created event: \(created.title)"
