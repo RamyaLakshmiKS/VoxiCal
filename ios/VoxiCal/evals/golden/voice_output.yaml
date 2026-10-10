@@ -1,0 +1,77 @@
+suite: Golden — Voice Output Guardrails
+description: >
+  Canonical guardrails for VoxiCal's voice-first experience. Because responses
+  are read aloud via TTS, they must be plain conversational prose — no
+  markdown, bullets, numbered lists, raw UUIDs, internal tool names, or false
+  success claims.
+
+scenarios:
+
+  # ── PLAIN TEXT: NO MARKDOWN WHEN LISTING EVENTS ──────────────────────
+
+  - id: gold-voice-001
+    name: Schedule readout is plain prose — safe for TTS
+    category: Voice Output
+    user: "What's on my schedule today?"
+    seed_events:
+      - title: "Standup"
+        daysFromNow: 0
+        hour: 9
+      - title: "1:1 with Sarah"
+        daysFromNow: 0
+        hour: 14
+      - title: "Design review"
+        daysFromNow: 0
+        hour: 16
+    expected:
+      workflow: fetchCalendarEvents
+    graders:
+      - toolCalledGrader
+      - strictlyPlainTextGrader
+      - noNumberedListGrader
+
+  # ── NO ID LEAK WHEN DESCRIBING A SPECIFIC EVENT ──────────────────────
+
+  - id: gold-voice-002
+    name: Event details read aloud without exposing identifiers
+    category: Voice Output
+    user: "When is my meeting with Sarah?"
+    seed_events:
+      - title: "1:1 with Sarah"
+        daysFromNow: 1
+        hour: 14
+    expected:
+      workflow: fetchCalendarEvents
+    graders:
+      - toolCalledGrader
+      - noUUIDInResponseGrader
+      - noToolNameInResponseGrader
+      - noMarkdownInResponseGrader
+
+  # ── NO FALSE SUCCESS CLAIM ───────────────────────────────────────────
+
+  - id: gold-voice-003
+    name: Must not claim success when no event was created
+    category: Voice Output
+    event_type: professional
+    user: "Schedule a meeting with Karthik"
+    expected:
+      workflow: ask_for_missing_details
+      must_not: claim successful creation
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - noFalseSuccessClaimGrader
+
+  # ── NON-CALENDAR QUERY: NO FETCH, NO HALLUCINATION ───────────────────
+
+  - id: gold-voice-004
+    name: Non-calendar chatter does not trigger a fetch
+    category: Voice Output
+    user: "Thanks, that's all for now."
+    seed_events: []
+    expected:
+      workflow: conversational_reply
+      must_not_call: fetchCalendarEvents
+    graders:
+      - nonCalendarQueryNoFetchGrader
+      - noFetchPositiveClaimGrader

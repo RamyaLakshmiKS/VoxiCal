@@ -1,0 +1,94 @@
+suite: Golden — Read & Retrieve
+description: >
+  Canonical read-path scenarios. The agent must call fetchCalendarEvents for
+  calendar questions, mention the events it finds, and never expose internal
+  identifiers. Greetings and non-calendar chatter must not trigger a fetch.
+
+scenarios:
+
+  # ── GREETING: NO TOOL CALL ───────────────────────────────────────────
+
+  - id: gold-read-001
+    name: Greeting — responds conversationally without a tool call
+    category: Greeting
+    user: "Hi, how are you?"
+    seed_events: []
+    expected:
+      workflow: conversational_reply
+      must_not_call: fetchCalendarEvents
+    graders:
+      - noToolCallGrader
+      - nonCalendarQueryNoFetchGrader
+
+  # ── MEETING LOOKUP: TOOL CALLED, EVENT FOUND ─────────────────────────
+
+  - id: gold-read-002
+    name: Meeting lookup — finds Sarah's meeting and mentions it
+    category: Meeting Lookup
+    user: "Do I have a meeting with Sarah today?"
+    seed_events:
+      - title: "1:1 with Sarah"
+        daysFromNow: 0
+        hour: 10
+      - title: "Team standup"
+        daysFromNow: 0
+        hour: 9
+    expected:
+      workflow: fetchCalendarEvents
+    graders:
+      - toolCalledGrader
+      - eventFoundAndMentionedGrader
+      - personNameInFetchFilterGrader(Sarah)
+
+  # ── HALLUCINATION GUARD: EMPTY CALENDAR ──────────────────────────────
+
+  - id: gold-read-003
+    name: Hallucination guard — empty calendar, must report no events
+    category: Hallucination Guard
+    user: "Do I have a meeting with Sarah today?"
+    seed_events: []
+    notes: >
+      The tool returns zero events. The agent must call the tool and then
+      explicitly state nothing is scheduled. Positively claiming a meeting
+      exists is a hard failure.
+    expected:
+      workflow: fetchCalendarEvents
+    graders:
+      - toolCalledGrader
+      - noEventsFoundGrader
+      - noFetchPositiveClaimGrader
+
+  # ── BROAD SCHEDULE QUERY: NO TITLE FILTER, NO ID LEAK ────────────────
+
+  - id: gold-read-004
+    name: Broad schedule query — lists events without leaking IDs
+    category: No EventID Leak
+    user: "What's on my schedule today?"
+    seed_events:
+      - title: "Standup"
+        daysFromNow: 0
+        hour: 9
+      - title: "1:1 with Sarah"
+        daysFromNow: 0
+        hour: 14
+    expected:
+      workflow: fetchCalendarEvents
+      must_not: expose raw eventID or UUID values
+    graders:
+      - toolCalledGrader
+      - noTitleFilterUsedGrader
+      - noEventIDInResponseGrader
+      - noUUIDInResponseGrader
+
+  # ── EMPTY DAY: STATE FACT, NOT UNCERTAINTY ───────────────────────────
+
+  - id: gold-read-005
+    name: Empty day — states "nothing scheduled" as a fact
+    category: Empty Calendar
+    user: "What do I have tomorrow?"
+    seed_events: []
+    expected:
+      workflow: fetchCalendarEvents
+    graders:
+      - toolCalledGrader
+      - nothingScheduledNotDontKnowGrader

@@ -1,0 +1,58 @@
+suite: Golden — Update & Reschedule
+description: >
+  Canonical update-path scenarios. Rescheduling or modifying an existing
+  event must fetch first and then call updateCalendarEvent. The agent must
+  never use createCalendarEvent to move an event that already exists.
+
+scenarios:
+
+  # ── MOVE EXISTING EVENT: FETCH THEN UPDATE ───────────────────────────
+
+  - id: gold-upd-001
+    name: Move standup to 10am — fetch then update
+    category: Update Event
+    user: "Move my team standup to 10am"
+    seed_events:
+      - title: "Team standup"
+        daysFromNow: 2
+        hour: 9
+    expected:
+      workflow: fetchCalendarEvents_then_updateCalendarEvent
+    graders:
+      - toolCalledGrader
+      - updateToolCalledGrader
+
+  # ── RESCHEDULE: UPDATE, NOT CREATE ───────────────────────────────────
+
+  - id: gold-upd-002
+    name: Reschedule 1:1 — uses update, not create
+    category: Create vs Update
+    user: "Reschedule my 1:1 with Sarah to 2pm"
+    seed_events:
+      - title: "1:1 with Sarah"
+        daysFromNow: 3
+        hour: 10
+    expected:
+      workflow: updateCalendarEvent
+      must_not_call: createCalendarEvent
+    graders:
+      - toolCalledGrader
+      - updateNotCreateGrader
+
+  # ── UPDATE RESPONSE HIDES INTERNALS ──────────────────────────────────
+
+  - id: gold-upd-003
+    name: Update confirmation hides tool names and IDs
+    category: Update Event
+    user: "Change my design review to 4pm"
+    seed_events:
+      - title: "Design review"
+        daysFromNow: 1
+        hour: 11
+    expected:
+      workflow: updateCalendarEvent
+    graders:
+      - toolCalledGrader
+      - updateToolCalledGrader
+      - noToolNameInResponseGrader
+      - noUUIDInResponseGrader
