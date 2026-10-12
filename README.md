@@ -14,11 +14,9 @@
 
 ---
 
-## Demo Video
+## Demo Video: [Link](https://youtube.com/shorts/GKEMYobACSU?si=kDWO2EsG4f-IyYIi)
 
-_[Add demo video here]_
-
-To add the video, drag an `.mp4`/`.mov` into a GitHub issue or release to get a hosted URL, then replace the placeholder above with the link (or paste the attachment directly here so it renders as a playable thumbnail).
+https://github.com/user-attachments/assets/c97447b8-e3df-453a-89ca-5a6496da58a0
 
 ## Technical Blog
 
