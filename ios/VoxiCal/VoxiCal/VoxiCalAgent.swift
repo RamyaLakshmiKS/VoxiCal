@@ -113,20 +113,23 @@ class VoxiCalAgent {
     private static let updateSection = """
         Updating events:
         - Call updateCalendarEvent to change an existing event. Always call fetchCalendarEvents first in the same turn.
+        - FINDING THE EVENT: When the user names an event to reschedule, move, or change (e.g., "my team standup", "my 1:1 with Sarah"), the event may be on ANY upcoming day — NOT just today. Fetch with the FULL window from the date prefix: startISO=today, endISO=14 days later. Pass the event name as titleFilter. Do NOT restrict the fetch to today, and do NOT ask the user which day it is — search the window and use the match.
         - NEVER call updateCalendarEvent with a placeholder, guessed, or stale event ID (e.g., "N/A", "event_123", or an ID from a prior turn). If you do not have a valid fresh eventID from fetchCalendarEvents called in this exact turn, fetch first.
-        - If the user has not named a specific event, ask which one before fetching. If multiple events match, list them and ask which to update.
+        - RESCHEDULE = CHANGE TIME ONLY: "reschedule", "move", and "change ... to [time]" mean update the start time of an existing event. Only pass the field the user named (e.g., newStartISO for a new time). NEVER ask the user for a location, platform, duration, or any other field they did not mention — those stay unchanged. Asking for a location on a reschedule is wrong.
+        - If the user has not named any event at all, ask which one before fetching. If multiple events match the name, list them and ask which to update.
         - Only pass fields the user explicitly asked to change (nil = keep unchanged, "" = clear the field).
         - After a successful update, confirm what changed conversationally: "Moved your standup to 10am tomorrow."
         - For recurring events, ask: "Change just this occurrence, or the whole series?"
-        - If a time is given without AM/PM and context is unclear, ask before updating. If no fetched event matches the user's description, say it was not found.
+        - If a time is given without AM/PM and context is unclear, ask before updating. If no fetched event matches the user's description across the full window, say it was not found.
         """
 
     private static let disambiguationSection = """
         Intent disambiguation:
-        - "reschedule", "move", "change", "update" → updateCalendarEvent
-        - "add", "create", "schedule" (new event) → createCalendarEvent
-        - "delete", "remove", "cancel" → deleteCalendarEvent
-        - When ambiguous, ask the user to clarify before acting.
+        - "reschedule", "move", "change", "update" → updateCalendarEvent. These ALWAYS refer to an existing event. Fetch it first (full today..+14-day window, filtered by the event name), then update ONLY the field the user mentioned. Never treat these as new-event creation, and never ask for a location, platform, or duration the user did not state.
+        - "add", "create", "schedule", "set up" (a NEW event) → createCalendarEvent.
+        - "delete", "remove", "cancel" → deleteCalendarEvent.
+        - Key distinction: if the user refers to something they already have ("my standup", "my 1:1 with Sarah"), it is an update/delete, not a create. Only ask for missing details when creating a brand-new event.
+        - When genuinely ambiguous, ask the user to clarify before acting.
         """
 
     private static let transcriptionSection = """

@@ -227,3 +227,35 @@ reports/
 
 # claude
 .claude
+
+# ──────────────────────────────────────────────────────────────────────
+# Xcode / Swift / iOS (the actual app lives in ios/VoxiCal)
+# ──────────────────────────────────────────────────────────────────────
+
+# Per-user Xcode state — never belongs in version control
+**/xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+# Build products and derived data
+build/
+DerivedData/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# CocoaPods / Carthage (not used today, ignored defensively)
+Pods/
+Carthage/Build/
+
+# macOS
+.DS_Store
+*.swp
