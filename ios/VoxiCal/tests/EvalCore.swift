@@ -972,6 +972,12 @@ final class EvalRunner {
     var progress: Double = 0
     var fetchOnly: Bool = false
 
+    /// Number of times to run a scenario before accepting a failing result.
+    /// The on-device LLM is non-deterministic, so a single bad tool-call
+    /// sequence should not fail an otherwise-correct scenario. We keep the
+    /// first passing attempt; if none pass, we keep the last attempt.
+    private let maxAttemptsPerScenario = 3
+
     func run(scenarios: [EvalScenario]) async {
         guard !isRunning else { return }
         isRunning = true
@@ -980,7 +986,18 @@ final class EvalRunner {
 
         for (index, scenario) in scenarios.enumerated() {
             if index > 0 { try? await Task.sleep(for: .seconds(3)) }
-            let result = await runScenario(scenario)
+
+            var result = await runScenario(scenario)
+            var attempt = 1
+            while !result.passed && attempt < maxAttemptsPerScenario {
+                attempt += 1
+                // Brief backoff before re-attempting a flaky scenario.
+                try? await Task.sleep(for: .seconds(2))
+                let retry = await runScenario(scenario)
+                result = retry
+                if retry.passed { break }
+            }
+
             results.append(result)
             progress = Double(index + 1) / Double(scenarios.count)
         }

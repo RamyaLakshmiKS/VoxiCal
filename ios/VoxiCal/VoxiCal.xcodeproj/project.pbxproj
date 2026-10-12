@@ -12,11 +12,6 @@
 		E1A2B3C4D5E6000022BB0013 /* VoxiCalAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0003 /* VoxiCalAgent.swift */; };
 		E1A2B3C4D5E6000022BB0014 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0004 /* SpeechService.swift */; };
 		E1A2B3C4D5E6000022BB0015 /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0005 /* TTSService.swift */; };
-		E1A2CC0000000011 /* EvalCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2CC0000000001 /* EvalCore.swift */; };
-		E1A2CC0000000012 /* UpdateEventEvals.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2CC0000000002 /* UpdateEventEvals.swift */; };
-		E1A2CC0000000013 /* ReadRetrieveEvals.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2CC0000000003 /* ReadRetrieveEvals.swift */; };
-		E1A2CC0000000014 /* AgentBehaviorEvals.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2CC0000000004 /* AgentBehaviorEvals.swift */; };
-		E1A2CC0000000015 /* CreateEventEvals.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2CC0000000005 /* CreateEventEvals.swift */; };
 		E1A2B3C4D5E6000022BB0017 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0007 /* ChatMessage.swift */; };
 		E1A2B3C4D5E6000022BB0018 /* ConversationArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0008 /* ConversationArchive.swift */; };
 		E1A2B3C4D5E6000022BB0019 /* SearchArchiveTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6000022BB0009 /* SearchArchiveTool.swift */; };
@@ -30,11 +25,6 @@
 		E1A2B3C4D5E6000022BB0003 /* VoxiCalAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VoxiCalAgent.swift; path = VoxiCal/VoxiCalAgent.swift; sourceTree = SOURCE_ROOT; };
 		E1A2B3C4D5E6000022BB0004 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SpeechService.swift; path = VoxiCal/SpeechService.swift; sourceTree = SOURCE_ROOT; };
 		E1A2B3C4D5E6000022BB0005 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TTSService.swift; path = VoxiCal/TTSService.swift; sourceTree = SOURCE_ROOT; };
-		E1A2CC0000000001 /* EvalCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EvalCore.swift; path = evals/EvalCore.swift; sourceTree = SOURCE_ROOT; };
-		E1A2CC0000000002 /* UpdateEventEvals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = UpdateEventEvals.swift; path = evals/UpdateEventEvals.swift; sourceTree = SOURCE_ROOT; };
-		E1A2CC0000000003 /* ReadRetrieveEvals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReadRetrieveEvals.swift; path = evals/ReadRetrieveEvals.swift; sourceTree = SOURCE_ROOT; };
-		E1A2CC0000000004 /* AgentBehaviorEvals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AgentBehaviorEvals.swift; path = evals/AgentBehaviorEvals.swift; sourceTree = SOURCE_ROOT; };
-		E1A2CC0000000005 /* CreateEventEvals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CreateEventEvals.swift; path = evals/CreateEventEvals.swift; sourceTree = SOURCE_ROOT; };
 		E1A2B3C4D5E6000022BB0007 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatMessage.swift; path = VoxiCal/ChatMessage.swift; sourceTree = SOURCE_ROOT; };
 		E1A2B3C4D5E6000022BB0008 /* ConversationArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ConversationArchive.swift; path = VoxiCal/ConversationArchive.swift; sourceTree = SOURCE_ROOT; };
 		E1A2B3C4D5E6000022BB0009 /* SearchArchiveTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SearchArchiveTool.swift; path = VoxiCal/SearchArchiveTool.swift; sourceTree = SOURCE_ROOT; };
@@ -79,11 +69,6 @@
 				E1A2B3C4D5E6000022BB0003 /* VoxiCalAgent.swift */,
 				E1A2B3C4D5E6000022BB0004 /* SpeechService.swift */,
 				E1A2B3C4D5E6000022BB0005 /* TTSService.swift */,
-				E1A2CC0000000001 /* EvalCore.swift */,
-				E1A2CC0000000002 /* UpdateEventEvals.swift */,
-				E1A2CC0000000003 /* ReadRetrieveEvals.swift */,
-				E1A2CC0000000004 /* AgentBehaviorEvals.swift */,
-				E1A2CC0000000005 /* CreateEventEvals.swift */,
 				E1A2B3C4D5E6000022BB0007 /* ChatMessage.swift */,
 				E1A2B3C4D5E6000022BB0008 /* ConversationArchive.swift */,
 				E1A2B3C4D5E6000022BB0009 /* SearchArchiveTool.swift */,
@@ -221,11 +206,6 @@
 				E1A2B3C4D5E6000022BB0013 /* VoxiCalAgent.swift in Sources */,
 				E1A2B3C4D5E6000022BB0014 /* SpeechService.swift in Sources */,
 				E1A2B3C4D5E6000022BB0015 /* TTSService.swift in Sources */,
-				E1A2CC0000000011 /* EvalCore.swift in Sources */,
-				E1A2CC0000000012 /* UpdateEventEvals.swift in Sources */,
-				E1A2CC0000000013 /* ReadRetrieveEvals.swift in Sources */,
-				E1A2CC0000000014 /* AgentBehaviorEvals.swift in Sources */,
-				E1A2CC0000000015 /* CreateEventEvals.swift in Sources */,
 				E1A2B3C4D5E6000022BB0017 /* ChatMessage.swift in Sources */,
 				E1A2B3C4D5E6000022BB0018 /* ConversationArchive.swift in Sources */,
 				E1A2B3C4D5E6000022BB0019 /* SearchArchiveTool.swift in Sources */,

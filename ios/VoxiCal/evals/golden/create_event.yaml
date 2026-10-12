@@ -1,0 +1,108 @@
+suite: Golden — Create Event
+description: >
+  Canonical create-path scenarios. When every required field is present the
+  agent calls createCalendarEvent immediately. When a required field is
+  missing it asks exactly one targeted clarifying question and must NOT call
+  the tool. Conflicts are reported without creating anything.
+
+scenarios:
+
+  # ── HAPPY PATH: ALL DETAILS PROVIDED ─────────────────────────────────
+
+  - id: gold-cre-001
+    name: Create with all required details — calls createCalendarEvent
+    category: Create Event
+    event_type: professional
+    user: "Schedule a team sync tomorrow at 3pm for 30 minutes on Zoom"
+    seed_events: []
+    required_fields: [title, date, time, duration, location]
+    expected:
+      workflow: createCalendarEvent
+      durationMinutes: 30
+      isAllDay: false
+    graders:
+      - createToolCalledGrader
+      - createCalledWithDurationGrader(30)
+      - createCalledWithoutAllDayGrader
+
+  # ── MISSING DETAILS: MUST ASK, MUST NOT CREATE ───────────────────────
+
+  - id: gold-cre-002
+    name: Missing details — asks before creating
+    category: Create Missing Details
+    event_type: professional
+    user: "I want to schedule a meeting with Karthik"
+    required_but_missing: [date, time, duration, location]
+    expected:
+      workflow: ask_for_missing_details
+      must_not_call: createCalendarEvent
+    graders:
+      - noActionToolCallsThisTurnGrader
+      - askedForMissingDetailsGrader
+      - noFalseSuccessClaimGrader
+
+  # ── CONFLICT: REPORT, DO NOT CREATE ──────────────────────────────────
+
+  - id: gold-cre-003
+    name: Conflict detected — reports overlap and does not create
+    category: Create Conflict
+    event_type: professional
+    user: "Schedule a sync tomorrow at 9am for 30 minutes on Teams"
+    seed_events:
+      - title: "Morning standup"
+        daysFromNow: 1
+        hour: 9
+        durationMinutes: 60
+      - title: "Morning standup"
+        daysFromNow: 2
+        hour: 9
+        durationMinutes: 60
+    expected:
+      workflow: report_conflict
+      must_not_call: createCalendarEvent
+    graders:
+      - toolCalledGrader
+      - conflictMentionedGrader
+      - noEventCreatedGrader
+      - noUUIDInResponseGrader
+
+  # ── ALL-DAY EVENT TYPE: BIRTHDAY ─────────────────────────────────────
+
+  - id: gold-cre-004
+    name: Birthday — created as an all-day event, no time asked
+    category: Create Event
+    event_type: birthday
+    user: "Add my mom's birthday on June 20"
+    seed_events: []
+    required_fields: [title, date]
+    expected:
+      workflow: createCalendarEvent
+      isAllDay: true
+    negative_assertions:
+      - must NOT ask for time
+      - must NOT ask for duration
+      - must NOT ask for location
+    graders:
+      - createToolCalledGrader
+      - createCalledWithAllDayGrader
+      - didNotAskForTimeGrader
+      - didNotAskForDurationGrader
+
+  # ── MOVIE: DEFAULT DURATION APPLIED ──────────────────────────────────
+
+  - id: gold-cre-005
+    name: Movie — default 150 min applied, duration not asked
+    category: Create Event
+    event_type: movie
+    user: "Add a movie night tomorrow at 8pm"
+    seed_events: []
+    defaults:
+      durationMinutes: 150
+    expected:
+      workflow: createCalendarEvent
+      durationMinutes: 150
+      isAllDay: false
+    graders:
+      - createToolCalledGrader
+      - createCalledWithDurationGrader(150)
+      - didNotAskForDurationGrader

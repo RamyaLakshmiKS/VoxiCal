@@ -237,17 +237,6 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
             return "isAllDay should only be true for birthdays and holidays. This is a '\(eventTypeLower)' event — set isAllDay=false and ask the user for a specific time."
         }
 
-        // Block generic event titles.
-        let titleLower = arguments.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let genericTitles: Set<String> = [
-            "call", "a call", "meeting", "a meeting", "event", "an event",
-            "appointment", "session", "a session", "sync", "a sync", "chat", "a chat"
-        ]
-        if genericTitles.contains(titleLower) {
-            logger.info("[TOOL: createCalendarEvent] blocked — generic title: \(arguments.title)")
-            return "The title '\(arguments.title)' is too generic. Ask the user what the event should be called (e.g., 'Call with John', 'Sprint Review', 'Doctor Appointment')."
-        }
-
         // Normalize empty location to nil
         let effectiveLocation: String? = arguments.location.flatMap {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
@@ -295,6 +284,19 @@ struct CreateCalendarEventTool: Tool, @unchecked Sendable {
                 Tell the user about this conflict conversationally. Offer: (a) pick a different time, (b) reschedule the conflicting event, (c) replace it. Do NOT act until the user decides.
                 """
             }
+        }
+
+        // Block generic event titles (checked AFTER conflict detection so that an
+        // overlapping time is always surfaced first — a conflict is more important
+        // to the user than a title nicety).
+        let titleLower = arguments.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let genericTitles: Set<String> = [
+            "call", "a call", "meeting", "a meeting", "event", "an event",
+            "appointment", "session", "a session", "sync", "a sync", "chat", "a chat"
+        ]
+        if genericTitles.contains(titleLower) {
+            logger.info("[TOOL: createCalendarEvent] blocked — generic title: \(arguments.title)")
+            return "The title '\(arguments.title)' is too generic. Ask the user what the event should be called (e.g., 'Call with John', 'Sprint Review', 'Doctor Appointment')."
         }
 
         // Location: required only for professional events (checked after conflict detection)
