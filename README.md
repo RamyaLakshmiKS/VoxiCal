@@ -381,12 +381,6 @@ Key claims in this README link to their implementation:
 - **English-centric extraction.** The deterministic fast-path patterns are tuned for English phrasing; other inputs fall back to the full LLM path.
 - **Non-deterministic evals.** Grading runs against a sampled model; mitigated with retries rather than greedy decoding.
 
-**Future improvements (not yet built)**
-- Semantic (embedding-based) archive retrieval.
-- A true tokenizer for budgeting instead of the chars/token heuristic.
-- Optional greedy decoding for fully reproducible evals.
-- Recurring-event and multi-calendar support.
-
 ## License
 
 This project is licensed under the [MIT License](LICENSE) — © 2026 Ramya Lakshmi KS.
